@@ -35,3 +35,21 @@ def test_already_async_url_and_sqlite_are_unchanged():
     assert _connect_args(url, ssl_mode) == {}
     url, ssl_mode = normalize_database_url("sqlite+aiosqlite:///./dev.db")
     assert url.drivername == "sqlite+aiosqlite" and ssl_mode is None
+
+
+async def test_pool_pre_ping_works_with_aiomysql():
+    """Regression: SQLAlchemy 2.0.36 crashed on every reused MySQL connection with
+    'AsyncAdapt_aiomysql_connection.ping() missing 1 required positional argument: reconnect'."""
+    from sqlalchemy.dialects.mysql import aiomysql as dialect_module
+    from sqlalchemy.util import greenlet_spawn
+
+    class FakeAiomysqlConnection:
+        pings = 0
+
+        async def ping(self, reconnect=True):
+            FakeAiomysqlConnection.pings += 1
+
+    dialect = dialect_module.dialect(dbapi=dialect_module.dialect.import_dbapi())
+    connection = dialect_module.AsyncAdapt_aiomysql_connection(dialect.loaded_dbapi, FakeAiomysqlConnection())
+    assert await greenlet_spawn(dialect.do_ping, connection) is True
+    assert FakeAiomysqlConnection.pings == 1
