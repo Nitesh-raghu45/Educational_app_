@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,20 +112,44 @@ def chunk_pages(pages: list[tuple[int | None, str]], size: int, overlap: int) ->
     return [Chunk(page, piece) for page, text in pages for piece in split_text(text, size, overlap)]
 
 
+class StepTimer:
+    """Records how long each ingestion step takes, for one summary log line per document."""
+
+    def __init__(self) -> None:
+        self.started = time.perf_counter()
+        self.steps: dict[str, float] = {}
+        self._mark = self.started
+
+    def lap(self, step: str) -> None:
+        now = time.perf_counter()
+        self.steps[step] = self.steps.get(step, 0.0) + (now - self._mark)
+        self._mark = now
+
+    def summary(self) -> str:
+        parts = [f"{step} {seconds:.1f}s" for step, seconds in self.steps.items()]
+        return " | ".join(parts + [f"total {time.perf_counter() - self.started:.1f}s"])
+
+
 async def ingest_document(document_id: uuid.UUID) -> None:
     settings = get_settings()
+    timer = StepTimer()
     async with SessionLocal() as session:
         doc = await session.get(Document, document_id)
         if doc is None:
             return
         doc.status, doc.error, doc.updated_at = "processing", None, utcnow()
         await session.commit()
+        timer.lap("start")
         namespace = providers.namespace_for(doc.user_id)
+        details = f"{doc.filename!r}, {doc.size_bytes // 1024} KB"
         try:
             if not Path(doc.storage_path).exists():
                 raise IngestionError("The uploaded file is no longer on the server (it restarted). Please upload it again.")
             pages = await asyncio.to_thread(extract_text, Path(doc.storage_path))
+            timer.lap("parse")
             chunks = chunk_pages(pages, settings.chunk_size, settings.chunk_overlap)
+            timer.lap("chunk")
+            details += f", {len(pages)} page(s), {len(chunks)} chunks"
             if not chunks:
                 raise IngestionError(
                     "No text could be extracted. Scanned PDFs aren't supported yet; upload page images instead."
@@ -135,8 +160,10 @@ async def ingest_document(document_id: uuid.UUID) -> None:
             if old_ids:
                 await asyncio.to_thread(providers.vector_store().delete, namespace, old_ids)
                 await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc.id))
+            timer.lap("cleanup")
 
             vectors = await asyncio.to_thread(providers.embedder().embed_documents, [c.text for c in chunks])
+            timer.lap("embed")
             rows = [
                 DocumentChunk(id=f"{doc.id.hex}-{i}", document_id=doc.id, chunk_index=i, page=c.page, text=c.text)
                 for i, c in enumerate(chunks)
@@ -150,12 +177,14 @@ async def ingest_document(document_id: uuid.UUID) -> None:
                 for row, vector in zip(rows, vectors)
             ]
             await asyncio.to_thread(providers.vector_store().upsert, namespace, items)
+            timer.lap("pinecone")
             session.add_all(rows)
             doc.status, doc.chunk_count, doc.updated_at = "ready", len(rows), utcnow()
             await session.commit()
-            logger.info("Ingested document %s (%d chunks)", doc.id, len(rows))
+            timer.lap("database")
+            logger.info("Ingested document %s (%s) in %s", doc.id, details, timer.summary())
         except Exception as exc:
-            logger.exception("Ingestion failed for document %s", document_id)
+            logger.exception("Ingestion failed for document %s (%s) after %s", document_id, details, timer.summary())
             await session.rollback()
             doc = await session.get(Document, document_id, populate_existing=True)
             if doc is not None:

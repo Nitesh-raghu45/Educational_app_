@@ -1,3 +1,5 @@
+import logging
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
@@ -11,6 +13,7 @@ from ..security import current_user
 from ..services import documents
 from ..services.jobs import enqueue_ingestion
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
@@ -22,9 +25,13 @@ async def upload_document(
     session: AsyncSession = Depends(get_session),
 ) -> Document:
     """Store the file privately and queue it for parsing, chunking and embedding."""
+    started = time.perf_counter()
     await enforce_rate_limit(user.id, "uploads", 30)
     doc = await documents.save_upload(session, user.id, file, section_id)
     await enqueue_ingestion(doc.id)
+    # The browser->server transfer happens before this handler runs (the progress bar shows it);
+    # this covers saving the file and creating the database record.
+    logger.info("Upload %s (%r, %d KB) saved in %.1fs", doc.id, doc.filename, doc.size_bytes // 1024, time.perf_counter() - started)
     return doc
 
 

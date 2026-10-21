@@ -1,10 +1,14 @@
 """Background work: ingestion jobs (arq/Redis or in-process) and answer-generation tasks."""
 
 import asyncio
+import logging
+import time
 import uuid
 from typing import Any, Coroutine
 
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _tasks: set[asyncio.Task] = set()
 _arq_pool = None
@@ -45,7 +49,11 @@ def _inline_ingestion_slot() -> asyncio.Semaphore:
 async def _ingest_inline(document_id: uuid.UUID) -> None:
     from .ingestion import ingest_document
 
+    queued_at = time.perf_counter()
     async with _inline_ingestion_slot():
+        waited = time.perf_counter() - queued_at
+        if waited >= 1:
+            logger.info("Document %s waited %.1fs for another document to finish processing", document_id, waited)
         await ingest_document(document_id)
 
 

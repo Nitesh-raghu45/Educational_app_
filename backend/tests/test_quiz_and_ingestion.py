@@ -117,3 +117,18 @@ async def test_restart_resumes_unfinished_documents_and_reports_lost_files(clien
     status = (await client.get(f"/api/v1/documents/{doc_id}/status", headers=headers)).json()
     assert status["status"] == "failed"
     assert "upload it again" in status["error"]
+
+
+async def test_ingestion_logs_time_per_step(client, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    headers = await register(client)
+    section_id = await new_section(client, headers)
+    await upload_ready_doc(client, headers, section_id)
+    upload_line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Upload "))
+    ingest_line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Ingested document"))
+    assert "'biology.txt'" in upload_line and "saved in" in upload_line
+    for part in ("'biology.txt'", "chunks", "parse ", "chunk ", "embed ", "pinecone ", "database ", "total "):
+        assert part in ingest_line, (part, ingest_line)
+    print("\n" + upload_line + "\n" + ingest_line)
