@@ -1,15 +1,19 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 
 from .api import auth, documents, quizzes, sections
 from .config import get_settings
-from .db import create_tables, engine
+from .db import SessionLocal, create_tables, engine
 from .errors import AppError
+from .models import Document
 from .ratelimit import get_redis
+from .services import jobs, providers
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,8 +42,38 @@ async def lifespan(app: FastAPI):
         logger.info("Redis disabled (REDIS_URL empty): rate limiting off")
     else:
         logger.warning("Redis %s: check REDIS_URL. Rate limiting is skipped until it is reachable.", status)
+    # Load the embedding model and open Pinecone now, in the background, instead of making the
+    # first upload or question after a (re)start wait 10-20 s for them.
+    jobs.spawn(warm_up())
+    jobs.spawn(resume_unfinished_ingestion())
     yield
     await engine.dispose()
+
+
+async def resume_unfinished_ingestion() -> None:
+    """Documents left pending/processing by a restart (e.g. Render spinning down mid-upload) would
+    otherwise show "processing" forever. Process them again; if the file was lost with the
+    host's disk, ingestion marks them failed so the student knows to upload again."""
+    try:
+        async with SessionLocal() as session:
+            ids = list(await session.scalars(select(Document.id).where(Document.status.in_(["pending", "processing"]))))
+        for document_id in ids:
+            await jobs.enqueue_ingestion(document_id)
+        if ids:
+            logger.info("Resumed %d unfinished document(s)", len(ids))
+    except Exception:
+        logger.warning("Could not resume unfinished documents", exc_info=True)
+
+
+async def warm_up() -> None:
+    settings = get_settings()
+    try:
+        await asyncio.to_thread(providers.embedder().embed_query, "warm up")
+        if settings.pinecone_api_key:
+            await asyncio.to_thread(providers.vector_store().query, "warm-up", [0.0] * settings.embedding_dim, 1, ["-"])
+        logger.info("Warm-up complete: embedding model loaded, vector store connected")
+    except Exception:
+        logger.warning("Warm-up failed; models will load on first use", exc_info=True)
 
 
 class UnhandledErrorMiddleware:

@@ -127,12 +127,28 @@ export const api = {
 
   listDocuments: () => request<DocumentInfo[]>("GET", "/documents"),
   sectionDocuments: (id: string) => request<DocumentInfo[]>("GET", `/sections/${id}/documents`),
-  uploadDocument: (file: File, sectionId: string) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("section_id", sectionId);
-    return request<DocumentInfo>("POST", "/documents", form);
-  },
+  /** Uses XMLHttpRequest because fetch() can't report upload progress. */
+  uploadDocument: (file: File, sectionId: string, onProgress?: (fraction: number) => void) =>
+    new Promise<DocumentInfo>((resolve, reject) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("section_id", sectionId);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", BASE + "/documents");
+      for (const [key, value] of Object.entries(authHeaders())) xhr.setRequestHeader(key, value);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress?.(e.loaded / e.total);
+      };
+      xhr.onload = async () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText));
+        } else {
+          reject(await toApiError(new Response(xhr.responseText, { status: xhr.status })));
+        }
+      };
+      xhr.onerror = () => reject(new ApiError(0, "NETWORK_ERROR", "Upload failed. Check your connection and try again."));
+      xhr.send(form);
+    }),
   attachDocument: (sectionId: string, documentId: string) =>
     request<DocumentInfo>("POST", `/sections/${sectionId}/documents`, { document_id: documentId }),
   detachDocument: (sectionId: string, documentId: string) =>

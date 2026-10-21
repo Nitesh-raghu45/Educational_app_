@@ -7,6 +7,8 @@ disconnects mid-stream. Events go to `emit`, which the SSE endpoint forwards to 
 import logging
 import re
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import update
@@ -79,10 +81,41 @@ def extract_citations(answer: str, evidence: list[Evidence]) -> list[dict[str, A
     return [evidence[n - 1].citation(index=n) for n in used]
 
 
-async def generate_answer(assistant_message_id: uuid.UUID, emit: Emit) -> None:
+@dataclass
+class AnswerContext:
+    """What generation needs from the database, preloaded by the request that created the answer."""
+
+    section_id: uuid.UUID
+    user_id: uuid.UUID
+    summary: str | None
+    question: str
+    question_created_at: datetime
+    document_ids: list[uuid.UUID]
+
+
+async def _load_context(session: AsyncSession, assistant_message_id: uuid.UUID) -> AnswerContext:
+    """Used by retries, where nothing is preloaded."""
+    assistant = await session.get(ChatMessage, assistant_message_id)
+    if assistant is None or assistant.reply_to_id is None:
+        raise RuntimeError("assistant message not found")
+    question_message = await session.get(ChatMessage, assistant.reply_to_id)
+    section = await session.get(ChatSection, assistant.section_id)
+    if question_message is None or section is None:
+        raise RuntimeError("question or section not found")
+    return AnswerContext(
+        section_id=section.id,
+        user_id=section.user_id,
+        summary=section.summary,
+        question=question_message.content,
+        question_created_at=question_message.created_at,
+        document_ids=await ready_document_ids(session, section.id),
+    )
+
+
+async def generate_answer(assistant_message_id: uuid.UUID, emit: Emit, context: AnswerContext | None = None) -> None:
     async with SessionLocal() as session:
         try:
-            await _generate(session, assistant_message_id, emit)
+            await _generate(session, assistant_message_id, emit, context)
         except Exception as exc:
             logger.exception("Answer generation failed for %s", assistant_message_id)
             await session.rollback()
@@ -102,39 +135,31 @@ async def generate_answer(assistant_message_id: uuid.UUID, emit: Emit) -> None:
             )
 
 
-async def _generate(session: AsyncSession, assistant_message_id: uuid.UUID, emit: Emit) -> None:
+async def _generate(
+    session: AsyncSession, assistant_message_id: uuid.UUID, emit: Emit, context: AnswerContext | None
+) -> None:
     settings = get_settings()
-    assistant = await session.get(ChatMessage, assistant_message_id)
-    if assistant is None or assistant.reply_to_id is None:
-        raise RuntimeError("assistant message not found")
-    question_message = await session.get(ChatMessage, assistant.reply_to_id)
-    section = await session.get(ChatSection, assistant.section_id)
-    if question_message is None or section is None:
-        raise RuntimeError("question or section not found")
-    question = question_message.content
-
-    assistant.status = "streaming"
-    assistant.updated_at = utcnow()
-    await session.commit()
+    # Everything before the first token is on the critical path, so it does as few database
+    # round trips as possible: the answer stays "pending" until it is saved complete.
+    ctx = context or await _load_context(session, assistant_message_id)
 
     history = await conversation.recent_history(
-        session, section.id, before=question_message.created_at, limit=settings.history_window
+        session, ctx.section_id, before=ctx.question_created_at, limit=settings.history_window
     )
-    query = await conversation.rewrite_query(section.summary, history, question)
-    document_ids = await ready_document_ids(session, section.id)
+    query = await conversation.rewrite_query(ctx.summary, history, ctx.question)
     evidence = await retrieve(
         session,
-        user_id=section.user_id,
-        document_ids=document_ids,
+        user_id=ctx.user_id,
+        document_ids=ctx.document_ids,
         query=query,
         top_k=settings.retrieval_top_k,
         min_score=settings.retrieval_min_score,
     )
-    if is_overview_question(question) or is_overview_question(query):
+    if is_overview_question(ctx.question) or is_overview_question(query):
         # Questions about the document as a whole: also give the model each document's opening.
         seen = {e.chunk_id for e in evidence}
         opening = await leading_chunks(
-            session, user_id=section.user_id, document_ids=document_ids, limit=settings.retrieval_top_k
+            session, user_id=ctx.user_id, document_ids=ctx.document_ids, limit=settings.retrieval_top_k
         )
         evidence = (evidence + [e for e in opening if e.chunk_id not in seen])[: settings.retrieval_top_k]
 
@@ -144,23 +169,26 @@ async def _generate(session: AsyncSession, assistant_message_id: uuid.UUID, emit
         await emit("token", {"text": answer})
     else:
         parts: list[str] = []
-        messages = build_messages(section.summary, history, evidence, question, query)
+        messages = build_messages(ctx.summary, history, evidence, ctx.question, query)
         async for delta in providers.llm().stream(messages, model=settings.groq_answer_model):
             parts.append(delta)
             await emit("token", {"text": delta})
         answer = "".join(parts).strip() or NOT_FOUND_ANSWER
         citations = extract_citations(answer, evidence)
 
-    assistant.content = answer
-    assistant.citations = citations
-    assistant.status = "completed"
-    assistant.updated_at = utcnow()
-    await session.commit()
     await emit("citations", {"citations": citations})
-    await emit("done", {"assistant_message_id": str(assistant.id), "status": "completed"})
+    await session.execute(
+        update(ChatMessage)
+        .where(ChatMessage.id == assistant_message_id)
+        .values(content=answer, citations=citations, status="completed", error=None, updated_at=utcnow())
+    )
+    await session.commit()
+    await emit("done", {"assistant_message_id": str(assistant_message_id), "status": "completed"})
 
     try:
-        await conversation.update_summary(session, section)
+        section = await session.get(ChatSection, ctx.section_id)
+        if section is not None:
+            await conversation.update_summary(session, section)
     except Exception:
-        logger.warning("Summary update failed for section %s", section.id, exc_info=True)
+        logger.warning("Summary update failed for section %s", ctx.section_id, exc_info=True)
         await session.rollback()

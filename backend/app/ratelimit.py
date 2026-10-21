@@ -34,9 +34,11 @@ async def enforce_rate_limit(user_id: uuid.UUID, bucket: str, limit_per_minute: 
         return
     key = f"rl:{bucket}:{user_id}:{int(time.time() // 60)}"
     try:
-        count = await client.incr(key)
-        if count == 1:
-            await client.expire(key, 70)
+        # One network round trip instead of two (cloud Redis is often far from the API).
+        async with client.pipeline(transaction=False) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, 70)
+            count, _ = await pipe.execute()
     except RedisError:
         logger.warning("Rate limiter unavailable; allowing request", exc_info=True)
         return

@@ -21,7 +21,7 @@ from ..schemas import (
     SectionUpdate,
 )
 from ..security import current_user
-from ..services import documents, quiz, sections
+from ..services import documents, quiz, rag, sections
 from .quizzes import quiz_out
 from .streaming import replay_response, start_generation, stream_response
 
@@ -108,7 +108,15 @@ async def post_message(
             else ("ANSWER_IN_PROGRESS", "This question is still being answered.")
         )
         raise AppError(409, code, message, {"assistant_message_id": str(answer.id)})
-    return stream_response(start, start_generation(sub.assistant_message.id))
+    context = rag.AnswerContext(
+        section_id=sub.section.id,
+        user_id=sub.section.user_id,
+        summary=sub.section.summary,
+        question=sub.user_message.content,
+        question_created_at=sub.user_message.created_at,
+        document_ids=sub.document_ids or [],
+    )
+    return stream_response(start, start_generation(sub.assistant_message.id, context))
 
 
 @router.post("/{section_id}/retry/{message_id}", response_class=StreamingResponse)

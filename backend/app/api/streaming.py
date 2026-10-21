@@ -18,14 +18,17 @@ def _format(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
-def start_generation(assistant_message_id: uuid.UUID) -> asyncio.Queue:
-    """Start generating in a background task. It finishes and saves even if the client disconnects."""
+def start_generation(assistant_message_id: uuid.UUID, context: rag.AnswerContext | None = None) -> asyncio.Queue:
+    """Start generating in a background task. It finishes and saves even if the client disconnects.
+
+    Pass `context` when the request already loaded it, so generation skips re-reading it.
+    """
     queue: asyncio.Queue = asyncio.Queue()
 
     async def emit(event: str, data: dict[str, Any]) -> None:
         queue.put_nowait((event, data))
 
-    jobs.spawn(rag.generate_answer(assistant_message_id, emit))
+    jobs.spawn(rag.generate_answer(assistant_message_id, emit, context))
     return queue
 
 

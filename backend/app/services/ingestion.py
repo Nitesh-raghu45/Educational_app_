@@ -57,30 +57,54 @@ def extract_text(path: Path) -> list[tuple[int | None, str]]:
     raise IngestionError(f"Unsupported file type: {ext}")
 
 
+# Coarsest to finest: paragraphs, lines, sentences, clauses, words, and characters as a last resort.
+SEPARATORS = ("\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", "")
+
+
+def _split_pieces(text: str, size: int, separators: tuple[str, ...]) -> list[str]:
+    """Cut text into pieces of at most `size` characters, using the coarsest separator that works.
+
+    Only pieces that are still too long are split again with the next, finer separator.
+    """
+    if len(text) <= size:
+        return [text]
+    separator, finer = separators[0], separators[1:]
+    if not separator:
+        return [text[i : i + size] for i in range(0, len(text), size)]
+    if separator not in text:
+        return _split_pieces(text, size, finer)
+    parts = text.split(separator)
+    pieces: list[str] = []
+    for i, part in enumerate(parts):
+        # Keep the separator with the text before it, so joined pieces read like the original.
+        piece = part + separator if i < len(parts) - 1 else part
+        if piece:
+            pieces.extend([piece] if len(piece) <= size else _split_pieces(piece, size, finer))
+    return pieces
+
+
 def split_text(text: str, size: int, overlap: int) -> list[str]:
+    """Recursive chunking: keep paragraphs (then lines, sentences, …) whole whenever they fit,
+    merging neighbours up to `size` characters. Consecutive chunks share up to `overlap`
+    characters of whole trailing sentences/lines, so context isn't lost at a boundary."""
     text = re.sub(r"[ \t\f\v]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    if not text:
+        return []
     chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = min(start + size, len(text))
-        if end < len(text):
-            window = text[start:end]
-            # Prefer breaking at a paragraph, then sentence, then line, then word boundary.
-            for separator in ("\n\n", ". ", "\n", " "):
-                cut = window.rfind(separator)
-                if cut > size // 2:
-                    end = start + cut + len(separator)
-                    break
-        piece = text[start:end].strip()
-        if piece:
-            chunks.append(piece)
-        if end >= len(text):
-            break
-        next_start = max(end - overlap, start + 1)
-        space = text.find(" ", next_start, end)
-        start = space + 1 if space != -1 else next_start
-    return chunks
+    window: list[str] = []
+    length = 0
+    for piece in _split_pieces(text, size, SEPARATORS):
+        if window and length + len(piece) > size:
+            chunks.append("".join(window).strip())
+            # Carry whole trailing pieces into the next chunk as overlap.
+            while window and (length > overlap or length + len(piece) > size):
+                length -= len(window.pop(0))
+        window.append(piece)
+        length += len(piece)
+    if window:
+        chunks.append("".join(window).strip())
+    return [chunk for chunk in chunks if chunk]
 
 
 def chunk_pages(pages: list[tuple[int | None, str]], size: int, overlap: int) -> list[Chunk]:
@@ -97,6 +121,8 @@ async def ingest_document(document_id: uuid.UUID) -> None:
         await session.commit()
         namespace = providers.namespace_for(doc.user_id)
         try:
+            if not Path(doc.storage_path).exists():
+                raise IngestionError("The uploaded file is no longer on the server (it restarted). Please upload it again.")
             pages = await asyncio.to_thread(extract_text, Path(doc.storage_path))
             chunks = chunk_pages(pages, settings.chunk_size, settings.chunk_overlap)
             if not chunks:

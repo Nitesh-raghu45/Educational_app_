@@ -1,6 +1,7 @@
 """Conversation context: recent history, rolling summary, and standalone query rewriting."""
 
 import logging
+import re
 import uuid
 from datetime import datetime
 
@@ -46,9 +47,31 @@ def _transcript(history: list[ChatMessage]) -> str:
     )
 
 
+# Words that point back at the conversation ("explain it", "what about the second one?").
+_REFERENCE_RE = re.compile(
+    r"\b(?:it|its|it's|this|that|these|those|they|them|their|theirs|he|him|his|she|her|hers|one|ones"
+    r"|former|latter|above|previous|earlier|again|more|else|same|other|another|second|third|last|next)\b",
+    re.IGNORECASE,
+)
+# Questions that only make sense as a continuation ("and the stroma?", "why?").
+_CONTINUATION_RE = re.compile(r"^\s*(?:and|but|or|so|also|then|why|how come|what about|how about)\b", re.IGNORECASE)
+
+
+def needs_rewrite(question: str) -> bool:
+    """Whether a question may depend on the conversation. A clearly standalone question skips the
+    rewrite call (a full LLM round trip before search) because rewriting it wouldn't change it."""
+    return (
+        len(question.split()) <= 3
+        or bool(_REFERENCE_RE.search(question))
+        or bool(_CONTINUATION_RE.search(question))
+    )
+
+
 async def rewrite_query(summary: str | None, history: list[ChatMessage], question: str) -> str:
     """Turn a follow-up like "explain that again" into a self-contained search query."""
     if not history and not summary:
+        return question
+    if not needs_rewrite(question):
         return question
     context = ""
     if summary:

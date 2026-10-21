@@ -64,3 +64,56 @@ def test_citations_accept_gpt_oss_bracket_styles():
     evidence = [Evidence(f"c{i}", uuid.uuid4(), f"doc{i}.pdf", i, "text", 0.9) for i in (1, 2, 3)]
     found = extract_citations("A [1]. B 【2】. C 【3†source】. D [9].", evidence)
     assert [c["index"] for c in found] == [1, 2, 3]
+
+
+def test_recursive_chunking_keeps_paragraphs_whole():
+    paragraphs = [f"Paragraph {i}. " + "This sentence explains one idea in detail. " * 6 for i in range(6)]
+    chunks = split_text("\n\n".join(paragraphs), size=1000, overlap=150)
+    assert all(len(c) <= 1000 for c in chunks)
+    # Every paragraph (~270 chars) appears unbroken inside some chunk.
+    for paragraph in paragraphs:
+        assert any(paragraph.strip() in chunk for chunk in chunks), paragraph[:20]
+
+
+def test_recursive_chunking_splits_long_paragraph_at_sentences():
+    sentence = "Mitochondria produce ATP through cellular respiration. "
+    chunks = split_text(sentence * 60, size=500, overlap=100)
+    assert len(chunks) > 1 and all(len(c) <= 500 for c in chunks)
+    # Chunks end on a sentence boundary rather than mid-word.
+    assert all(c.endswith(".") for c in chunks)
+    # Neighbouring chunks overlap by whole sentences.
+    assert chunks[1].startswith("Mitochondria")
+
+
+def test_recursive_chunking_handles_text_without_separators():
+    chunks = split_text("x" * 2500, size=1000, overlap=150)
+    assert [len(c) for c in chunks] == [1000, 1000, 500]
+
+
+async def test_restart_resumes_unfinished_documents_and_reports_lost_files(client):
+    import uuid as _uuid
+
+    from app.db import SessionLocal
+    from app.main import resume_unfinished_ingestion
+    from app.models import Document
+
+    headers = await register(client)
+    user_id = _uuid.UUID((await client.get("/api/v1/auth/me", headers=headers)).json()["id"])
+    async with SessionLocal() as session:
+        doc = Document(
+            user_id=user_id, filename="lost.txt", content_type="text/plain", size_bytes=10,
+            storage_path="/nonexistent/lost.txt", status="processing",
+        )
+        session.add(doc)
+        await session.commit()
+        doc_id = doc.id
+
+    await resume_unfinished_ingestion()
+    import asyncio
+
+    from app.services import jobs
+    await asyncio.gather(*list(jobs._tasks), return_exceptions=True)
+
+    status = (await client.get(f"/api/v1/documents/{doc_id}/status", headers=headers)).json()
+    assert status["status"] == "failed"
+    assert "upload it again" in status["error"]

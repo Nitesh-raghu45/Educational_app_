@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,8 @@ class Submission:
     assistant_message: ChatMessage
     # True when the idempotency key matched an earlier submission; no slot was reserved.
     replayed: bool = False
+    # Ready documents found during the pre-check, handed to generation so it needn't query again.
+    document_ids: list[uuid.UUID] | None = None
 
 
 def section_not_found() -> AppError:
@@ -146,17 +148,25 @@ async def submit_question(
     content: str,
     idempotency_key: str | None,
 ) -> Submission:
-    """Reserve one question slot and persist the question plus a pending answer, atomically."""
-    if idempotency_key:
-        existing = await _find_submission(session, section_id, user_id, idempotency_key)
-        if existing:
+    """Reserve one question slot and persist the question plus a pending answer, atomically.
+
+    Duplicate submissions (same idempotency key) are detected by the unique index when the
+    question is inserted, not by an extra lookup up front: one fewer database round trip for
+    every normal question.
+    """
+
+    async def replay_or_raise(error: AppError) -> Submission:
+        # A retried request for a question that was already accepted (maybe the 30th) replays it.
+        if idempotency_key and (existing := await _find_submission(session, section_id, user_id, idempotency_key)):
             return existing
+        raise error
 
     # Friendly pre-checks; the conditional UPDATE below is what actually enforces the limit.
     section = await get_owned_section(session, section_id, user_id)
     if section.status != "active" or section.question_count >= section.max_questions:
-        raise _closed_error(section)
-    if not await ready_document_ids(session, section_id):
+        return await replay_or_raise(_closed_error(section))
+    document_ids = await ready_document_ids(session, section_id)
+    if not document_ids:
         raise AppError(
             409, "NO_READY_DOCUMENTS", "Upload or attach at least one processed document to this chat first."
         )
@@ -175,7 +185,7 @@ async def submit_question(
     )
     if result.rowcount != 1:
         await session.rollback()
-        raise _closed_error(await get_owned_section(session, section_id, user_id))
+        return await replay_or_raise(_closed_error(await get_owned_section(session, section_id, user_id)))
 
     # Our UPDATE holds the row lock until commit, so this read is consistent.
     await session.refresh(section)
@@ -184,30 +194,32 @@ async def submit_question(
     if not section.title:
         section.title = _title_from(content)
 
-    user_message = ChatMessage(
+    question_row = dict(
         id=uuid.uuid4(),
         section_id=section_id,
         role="user",
         content=content,
+        citations=None,
         status="completed",
+        reply_to_id=None,
         idempotency_key=idempotency_key,
+        error=None,
         created_at=now,
         updated_at=now,
     )
-    assistant_message = ChatMessage(
+    answer_row = dict(
+        question_row,
         id=uuid.uuid4(),
-        section_id=section_id,
         role="assistant",
         content="",
         status="pending",
-        reply_to_id=user_message.id,
+        reply_to_id=question_row["id"],
+        idempotency_key=None,
         created_at=now + timedelta(microseconds=1),
-        updated_at=now,
     )
-    session.add(user_message)
-    await session.flush()
-    session.add(assistant_message)
     try:
+        # Both rows in one multi-row INSERT (one round trip); the question comes first for the FK.
+        await session.execute(insert(ChatMessage.__table__), [question_row, answer_row])
         await session.commit()
     except IntegrityError:
         # A concurrent request with the same idempotency key won; our slot reservation rolls back too.
@@ -215,7 +227,7 @@ async def submit_question(
         if idempotency_key and (existing := await _find_submission(session, section_id, user_id, idempotency_key)):
             return existing
         raise
-    return Submission(section, user_message, assistant_message)
+    return Submission(section, ChatMessage(**question_row), ChatMessage(**answer_row), document_ids=document_ids)
 
 
 async def reset_for_retry(

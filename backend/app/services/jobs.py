@@ -29,12 +29,30 @@ def arq_redis_settings():
     return redis_settings
 
 
+_inline_slot: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+
+
+def _inline_ingestion_slot() -> asyncio.Semaphore:
+    """One document at a time in-process: several large uploads embedding at once could exceed
+    a small host's memory (Render free: 512 MB). Created per event loop."""
+    global _inline_slot
+    loop = asyncio.get_running_loop()
+    if _inline_slot is None or _inline_slot[0] is not loop:
+        _inline_slot = (loop, asyncio.Semaphore(1))
+    return _inline_slot[1]
+
+
+async def _ingest_inline(document_id: uuid.UUID) -> None:
+    from .ingestion import ingest_document
+
+    async with _inline_ingestion_slot():
+        await ingest_document(document_id)
+
+
 async def enqueue_ingestion(document_id: uuid.UUID) -> None:
     settings = get_settings()
     if settings.ingest_mode == "inline":
-        from .ingestion import ingest_document
-
-        spawn(ingest_document(document_id))
+        spawn(_ingest_inline(document_id))
         return
     global _arq_pool
     if _arq_pool is None:

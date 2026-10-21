@@ -1,9 +1,12 @@
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,7 +26,8 @@ def _is_ready(description: Any) -> bool:
 class PineconeStore:
     """Thin synchronous wrapper around a Pinecone serverless index (call via asyncio.to_thread)."""
 
-    UPSERT_BATCH = 100
+    # Smaller requests (~300 KB of JSON each) are less likely to stall on slow uplinks.
+    UPSERT_BATCH = 50
     DELETE_BATCH = 1000
 
     def __init__(self, settings: Settings):
@@ -56,19 +60,39 @@ class PineconeStore:
             self._index = pc.Index(s.pinecone_index)
             return self._index
 
+    def _call(self, fn, *, timeout: float, attempts: int, **kwargs):
+        """Pinecone requests have no timeout by default, so one stalled connection could leave a
+        document "processing" forever. Bound each request and retry transient failures."""
+        for attempt in range(1, attempts + 1):
+            try:
+                return fn(_request_timeout=timeout, **kwargs)
+            except Exception:
+                if attempt == attempts:
+                    raise
+                logger.warning("Pinecone %s failed (attempt %d/%d); retrying", fn.__name__, attempt, attempts, exc_info=True)
+                time.sleep(min(2**attempt, 8))
+
     def upsert(self, namespace: str, items: list[tuple[str, list[float], dict[str, Any]]]) -> None:
         index = self._get_index()
         for start in range(0, len(items), self.UPSERT_BATCH):
             batch = items[start : start + self.UPSERT_BATCH]
-            index.upsert(
+            # Safe to retry: vector ids are fixed, so a repeated upsert just overwrites.
+            self._call(
+                index.upsert,
+                timeout=30,
+                attempts=3,
                 vectors=[{"id": i, "values": v, "metadata": m} for i, v, m in batch],
                 namespace=namespace,
+                show_progress=False,
             )
 
     def query(self, namespace: str, vector: list[float], top_k: int, document_ids: list[str]) -> list[Match]:
         if not document_ids:
             return []
-        result = self._get_index().query(
+        result = self._call(
+            self._get_index().query,
+            timeout=10,
+            attempts=2,
             namespace=namespace,
             vector=vector,
             top_k=top_k,
@@ -80,4 +104,4 @@ class PineconeStore:
     def delete(self, namespace: str, ids: list[str]) -> None:
         index = self._get_index()
         for start in range(0, len(ids), self.DELETE_BATCH):
-            index.delete(ids=ids[start : start + self.DELETE_BATCH], namespace=namespace)
+            self._call(index.delete, timeout=30, attempts=3, ids=ids[start : start + self.DELETE_BATCH], namespace=namespace)

@@ -100,9 +100,29 @@ stream with `fetch()` because `EventSource` can't send a POST body or an `Author
 7. Save the answer with its cited chunks. Fold older messages into the rolling summary, so all 30 turns keep context without sending every turn to the LLM.
 
 ### Document ingestion ([services/ingestion.py](backend/app/services/ingestion.py))
-Upload → private storage → arq job → parse (pypdf / python-docx / Tesseract OCR) → ~1000-char chunks
-with overlap, keeping page numbers → MiniLM embeddings → Pinecone upsert (vector id = chunk id) → chunk
-text into MariaDB → `ready`. The UI polls `GET /documents/{id}/status`.
+Upload → private storage → arq job (or inline) → parse (pypdf / python-docx / Tesseract OCR) →
+**recursive chunking** → MiniLM embeddings → Pinecone upsert (vector id = chunk id) → chunk text into
+MariaDB → `ready`. The UI shows upload progress and a processing spinner, and polls
+`GET /documents/{id}/status`.
+
+- **Recursive chunking:** text is split on the coarsest boundary that fits, in this order: paragraphs,
+  lines, sentences, clauses, words, then characters. Neighbouring pieces are merged up to `CHUNK_SIZE`
+  (1000 characters). So paragraphs stay whole when they fit, and neighbouring chunks share up to
+  `CHUNK_OVERLAP` (150) characters of whole sentences. PDFs are chunked page by page, so citations keep
+  their page numbers.
+- **Reliability:** Pinecone calls have timeouts and retries. Documents left processing by a restart are
+  picked up again at startup. If the file was lost (Render's disk is wiped on restart), the document is
+  marked failed with "please upload again".
+
+### Latency
+- **Fewer round trips:** one question costs 12 SQL statements (pinned by
+  `tests/test_latency_budget.py`). The generation task reuses what the request already loaded, the
+  question and its pending answer go in one multi-row INSERT, and duplicate submissions are caught by
+  the unique index instead of a lookup.
+- **Redis:** the rate-limit check is a single pipelined round trip.
+- **Query rewriting:** follow-ups are rewritten only when they refer back to the conversation ("what
+  does *it* produce?", "and the stroma?"). Standalone questions skip that extra LLM call.
+- **Warm start:** the embedding model and the Pinecone connection are warmed up when the API starts.
 
 ### Quizzes ([services/quiz.py](backend/app/services/quiz.py))
 The app picks chunks: retrieved by topic, or a random spread when no topic is given. Groq JSON mode turns them into

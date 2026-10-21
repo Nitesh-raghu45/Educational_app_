@@ -53,7 +53,7 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
   // Poll while documents are being processed.
   useEffect(() => {
     if (!docs.some((d) => d.status === "pending" || d.status === "processing")) return;
-    const timer = setTimeout(reloadDocs, 2000);
+    const timer = setTimeout(reloadDocs, 1500);
     return () => clearTimeout(timer);
   }, [docs, reloadDocs]);
 
@@ -212,7 +212,14 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
           </div>
         ) : !hasReadyDoc ? (
           <div className="limit-banner">
-            {processing ? "Processing your documents…" : "Upload a document to start asking questions."}
+            {processing ? (
+              <span className="busy-label">
+                <span className="spinner" aria-hidden="true" />
+                Processing your documents… you can ask questions as soon as one is ready.
+              </span>
+            ) : (
+              "Upload a document to start asking questions."
+            )}
             {!processing && (
               <button className="primary" onClick={() => setShowDocs(true)}>
                 Upload documents
