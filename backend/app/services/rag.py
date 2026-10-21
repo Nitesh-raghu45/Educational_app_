@@ -16,7 +16,7 @@ from ..config import get_settings
 from ..db import SessionLocal
 from ..models import ChatMessage, ChatSection, utcnow
 from . import conversation, providers
-from .retrieval import Evidence, retrieve
+from .retrieval import Evidence, leading_chunks, retrieve
 from .sections import ready_document_ids
 
 logger = logging.getLogger(__name__)
@@ -29,12 +29,27 @@ Rules:
 - Cite every factual statement inline, right after it, with its source number in plain square brackets, e.g. [1] or [2][3].
 - If the SOURCES do not contain the answer, say clearly that you could not find it in the uploaded documents. Never fill gaps with outside knowledge.
 - Earlier conversation is only for understanding what the student means; it is not evidence.
+- If the student asks what the documents are about or for a summary, summarise the SOURCES.
 - Be clear and concise. Use Markdown (short lists, bold key terms) when it helps understanding."""
 
 NOT_FOUND_ANSWER = (
     "I couldn't find anything about that in the documents attached to this chat. "
     "Try rephrasing the question, or upload/attach the material that covers it."
 )
+
+_DOCUMENT_WORDS = r"(?:documents?|docs?|files?|pdfs?|notes?|resumes?|cvs?|papers?|chapters?|texts?|materials?|uploads?|attachments?)"
+# Questions about a document as a whole, e.g. "what is this document about", "summarize", "key points".
+_OVERVIEW_RE = re.compile(
+    r"\b(?:summar(?:y|ies|ise|ize|ised|ized|ising|izing)|overview|outline|gist|tl;?dr"
+    r"|(?:main|key) (?:ideas?|points?|topics?|takeaways?|themes?)"
+    rf"|(?:this|these|the|my|that|uploaded|attached) {_DOCUMENT_WORDS})\b",
+    re.IGNORECASE,
+)
+
+
+def is_overview_question(question: str) -> bool:
+    return bool(_OVERVIEW_RE.search(question))
+
 
 # gpt-oss models sometimes cite as 【1】 or 【1†source】 instead of [1]; accept all of them.
 _CITATION_RE = re.compile(r"[\[【](\d{1,2})(?:†[^\]】]*)?[\]】]")
@@ -106,14 +121,22 @@ async def _generate(session: AsyncSession, assistant_message_id: uuid.UUID, emit
         session, section.id, before=question_message.created_at, limit=settings.history_window
     )
     query = await conversation.rewrite_query(section.summary, history, question)
+    document_ids = await ready_document_ids(session, section.id)
     evidence = await retrieve(
         session,
         user_id=section.user_id,
-        document_ids=await ready_document_ids(session, section.id),
+        document_ids=document_ids,
         query=query,
         top_k=settings.retrieval_top_k,
         min_score=settings.retrieval_min_score,
     )
+    if is_overview_question(question) or is_overview_question(query):
+        # Questions about the document as a whole: also give the model each document's opening.
+        seen = {e.chunk_id for e in evidence}
+        opening = await leading_chunks(
+            session, user_id=section.user_id, document_ids=document_ids, limit=settings.retrieval_top_k
+        )
+        evidence = (evidence + [e for e in opening if e.chunk_id not in seen])[: settings.retrieval_top_k]
 
     if not evidence:
         # No supporting evidence: answer with a fixed refusal instead of letting the model guess.

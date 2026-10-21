@@ -128,6 +128,34 @@ async def retrieve(
     return evidence
 
 
+async def leading_chunks(
+    session: AsyncSession, *, user_id: uuid.UUID, document_ids: list[uuid.UUID], limit: int
+) -> list[Evidence]:
+    """The opening chunks of each document, spread evenly across documents.
+
+    Similarity search can't answer questions about a document as a whole ("what is this file
+    about?", "summarize it"): the question shares no words or meaning with any single passage.
+    """
+    if not document_ids or limit <= 0:
+        return []
+    per_document = max(1, limit // len(document_ids))
+    rows = await session.execute(
+        select(DocumentChunk, Document.filename)
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(
+            Document.user_id == user_id,
+            Document.id.in_(document_ids),
+            DocumentChunk.chunk_index < per_document,
+        )
+        .order_by(DocumentChunk.chunk_index, Document.created_at)
+        .limit(limit)
+    )
+    return [
+        Evidence(chunk.id, chunk.document_id, filename, chunk.page, chunk.text, 0.0, "overview")
+        for chunk, filename in rows
+    ]
+
+
 async def sample_chunks(
     session: AsyncSession, *, user_id: uuid.UUID, document_ids: list[uuid.UUID], count: int
 ) -> list[Evidence]:
