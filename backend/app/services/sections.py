@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import AppError
+from . import usage
 from ..models import ChatMessage, ChatSection, Document, Quiz, QuizAttempt, SectionDocument, utcnow
 
 # A pending/streaming answer older than this is assumed orphaned (e.g. the server restarted).
@@ -48,6 +49,7 @@ async def get_owned_section(session: AsyncSession, section_id: uuid.UUID, user_i
 async def create_section(
     session: AsyncSession, user_id: uuid.UUID, title: str | None, max_questions: int
 ) -> ChatSection:
+    await usage.reserve(session, user_id, "chat")
     section = ChatSection(id=uuid.uuid4(), user_id=user_id, title=title, max_questions=max_questions)
     session.add(section)
     await session.commit()
@@ -170,6 +172,13 @@ async def submit_question(
         raise AppError(
             409, "NO_READY_DOCUMENTS", "Upload or attach at least one processed document to this chat first."
         )
+
+    # Daily per-user cap; rolled back with everything else if the question isn't accepted.
+    # A resubmission of a question accepted earlier still gets its answer, even at the limit.
+    try:
+        await usage.reserve(session, user_id, "question")
+    except AppError as error:
+        return await replay_or_raise(error)
 
     now = utcnow()
     result = await session.execute(

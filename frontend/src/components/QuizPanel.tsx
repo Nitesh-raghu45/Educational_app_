@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { api, ApiError } from "../api";
+import { api, describeError } from "../api";
 import type { Attempt, Quiz } from "../types";
 
 export default function QuizPanel({ sectionId, onClose }: { sectionId: string; onClose: () => void }) {
@@ -21,7 +21,7 @@ export default function QuizPanel({ sectionId, onClose }: { sectionId: string; o
       setAnswers(q.questions.map(() => null));
       setAttempt(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't create a quiz.");
+      setError(describeError(err, "Couldn't create a quiz."));
     } finally {
       setBusy(false);
     }
@@ -33,7 +33,7 @@ export default function QuizPanel({ sectionId, onClose }: { sectionId: string; o
     try {
       setAttempt(await api.submitAttempt(quiz.id, answers));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't submit answers.");
+      setError(describeError(err, "Couldn't submit answers."));
     } finally {
       setBusy(false);
     }

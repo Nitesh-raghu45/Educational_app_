@@ -1,9 +1,10 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -110,6 +111,17 @@ class DocumentChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer)
     page: Mapped[int | None] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
+
+
+class DailyUsage(Base):
+    """How many of each costly action (question, quiz, upload, chat) a user did on a UTC day."""
+
+    __tablename__ = "daily_usage"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class DocumentEmbedding(Base):

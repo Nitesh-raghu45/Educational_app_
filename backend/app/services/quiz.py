@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..errors import AppError
 from ..models import ChatSection, Quiz, QuizAttempt
-from . import providers
+from . import providers, usage
 from .retrieval import Evidence, format_sources, retrieve, sample_chunks
 from .sections import ready_document_ids
 
@@ -89,17 +89,25 @@ async def create_quiz(
     if not evidence:
         raise AppError(422, "NO_EVIDENCE", "Couldn't find material on that topic in this chat's documents.")
 
+    # Count the quiz before the (slow, costly) LLM call; give it back if generation fails.
+    await usage.reserve(session, section.user_id, "quiz")
+    await session.commit()
     sources = format_sources(evidence)
     messages = [
         {"role": "system", "content": QUIZ_PROMPT.replace("{n}", str(num_questions))},
         {"role": "user", "content": f"SOURCES:\n{sources}"},
     ]
-    raw = await providers.llm().complete(
-        messages, model=settings.groq_answer_model, temperature=0.4, max_tokens=8192, json_mode=True
-    )
+    try:
+        raw = await providers.llm().complete(
+            messages, model=settings.groq_answer_model, temperature=0.4, max_tokens=8192, json_mode=True
+        )
+    except Exception:
+        await usage.refund(session, section.user_id, "quiz")
+        raise
     questions = _validate(raw, evidence, num_questions)
     if not questions:
         logger.warning("Quiz generation returned no valid questions: %s", raw[:500])
+        await usage.refund(session, section.user_id, "quiz")
         raise AppError(502, "QUIZ_GENERATION_FAILED", "Couldn't generate a quiz right now. Please try again.")
 
     quiz = Quiz(id=uuid.uuid4(), section_id=section.id, user_id=section.user_id, topic=topic or None, questions=questions)

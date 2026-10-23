@@ -1,5 +1,5 @@
 import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, streamSSE } from "../api";
+import { api, describeError, streamSSE } from "../api";
 import type { DocumentInfo, Message, Section, StartEvent } from "../types";
 import DocumentsPanel from "./DocumentsPanel";
 import MessageBubble from "./MessageBubble";
@@ -46,7 +46,7 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
         setDocs(d);
         if (d.length === 0) setShowDocs(true);
       })
-      .catch((err) => setError(err instanceof ApiError ? err.message : "Couldn't load this chat."));
+      .catch((err) => setError(describeError(err, "Couldn't load this chat.")));
     return () => abortRef.current?.abort(); // the server still finishes and saves the answer
   }, [sectionId]);
 
@@ -114,10 +114,10 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
       if (!started && placeholder.userId) {
         // Rejected before a slot was reserved (limit reached, no documents, rate limit…).
         setMessages((ms) => ms.filter((m) => m.id !== placeholder.userId && m.id !== placeholder.assistantId));
-        setError(err instanceof ApiError ? err.message : "Couldn't send your question.");
+        setError(describeError(err, "Couldn't send your question."));
         api.getSection(sectionId).then(updateSection);
       } else if (!started) {
-        setError(err instanceof ApiError ? err.message : "Couldn't retry.");
+        setError(describeError(err, "Couldn't retry."));
         reloadMessages();
       } else {
         // Connection dropped mid-stream; the server keeps generating, so fetch the saved result.

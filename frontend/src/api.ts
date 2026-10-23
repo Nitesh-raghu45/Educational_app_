@@ -1,4 +1,4 @@
-import type { Attempt, DocumentInfo, Message, Quiz, Section, User } from "./types";
+import type { Attempt, DocumentInfo, Message, Quiz, Section, Usage, User } from "./types";
 
 // Empty in dev/docker (same origin, proxied). On Render, VITE_API_URL is the API service URL.
 const BASE = `${(import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "")}/api/v1`;
@@ -13,6 +13,17 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+/** "You've reached today's limit…" plus when it resets, in the reader's local time. */
+export function describeError(err: unknown, fallback: string): string {
+  if (!(err instanceof ApiError)) return fallback;
+  if (err.code === "DAILY_LIMIT_REACHED" && typeof err.details.resets_at === "string") {
+    const resets = new Date(err.details.resets_at);
+    const time = resets.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return err.message.replace("It resets at midnight UTC.", `It resets at ${time} your time.`);
+  }
+  return err.message;
 }
 
 export function getToken(): string | null {
@@ -117,6 +128,7 @@ export const api = {
   login: (email: string, password: string) =>
     request<{ access_token: string; user: User }>("POST", "/auth/login", { email, password }),
   me: () => request<User>("GET", "/auth/me"),
+  usage: () => request<Usage>("GET", "/usage"),
 
   listSections: () => request<Section[]>("GET", "/sections"),
   createSection: () => request<Section>("POST", "/sections", {}),

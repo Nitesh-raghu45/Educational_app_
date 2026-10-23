@@ -46,7 +46,8 @@ async def test_question_round_trip_budget(client):
     statements = await _count_statements_for_question(client, "What does photosynthesis produce?")
     # Was 18 before: an up-front idempotency lookup, re-reading the question/section/answer and
     # document list in the generation task, a "streaming" status write, and two separate INSERTs.
-    assert len(statements) <= 12, "\n".join(statements)
+    # The daily per-user question limit adds one UPDATE.
+    assert len(statements) <= 13, "\n".join(statements)
 
 
 async def test_standalone_follow_up_skips_rewrite_but_real_follow_up_keeps_it(client, fake_llm, monkeypatch):

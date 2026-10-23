@@ -81,6 +81,26 @@ database. The suite drops and recreates its tables. `backend/schema.sql` is the 
   regenerates the answer without reserving a slot. Answers stuck in `pending` or `streaming` for more than
   2 minutes (for example after a server restart) can be retried the same way.
 
+### Daily per-user limits
+The per-chat limit alone doesn't cap cost, because anyone can open more chats. So each user also has
+**daily limits**: `DAILY_QUESTION_LIMIT` (100), `DAILY_QUIZ_LIMIT` (20), `DAILY_UPLOAD_LIMIT` (30) and
+`DAILY_CHAT_LIMIT` (20). They reset at midnight UTC, and 0 means unlimited. They're stored in
+`daily_usage` and enforced like the chat quota: a conditional `UPDATE … WHERE count < limit` in the same
+transaction as the action, so concurrent requests can't overshoot and a rejected action uses nothing.
+- **Free:** retrying a failed answer, and resubmitting the same question.
+- **Refunded:** quizzes whose generation fails.
+- **Visible:** the sidebar shows today's usage, `GET /api/v1/usage` returns it, and hitting a limit
+  returns `429 DAILY_LIMIT_REACHED` with the reset time.
+
+### Answer formatting
+Answers render ChatGPT/Claude-style ([AnswerMarkdown.tsx](frontend/src/components/AnswerMarkdown.tsx)):
+- **Citations:** compact numbered chips (one per paragraph, list item or table row) with the source
+  passage on hover or tap, plus a Sources row below the answer.
+- **Tables:** bordered and scrollable.
+- **Math:** KaTeX (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`).
+- **Code:** code blocks with a Copy button.
+- **Text:** fonts that render Hindi (Devanagari) cleanly, and a Copy-answer button.
+
 ### Streaming (SSE)
 `POST /api/v1/sections/{id}/messages` returns `text/event-stream` with these events:
 `message_start` (saved message IDs and the updated quota) → `token`… → `citations` → `done`, or `error`.

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, getToken, setToken, setUnauthorizedHandler } from "./api";
+import { api, describeError, getToken, setToken, setUnauthorizedHandler } from "./api";
 import AuthScreen from "./components/AuthScreen";
 import ChatView from "./components/ChatView";
 import Sidebar from "./components/Sidebar";
-import type { Section, User } from "./types";
+import type { Section, Usage, User } from "./types";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -11,6 +11,8 @@ export default function App() {
   const [sections, setSections] = useState<Section[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const logout = useCallback(() => {
     setToken(null);
@@ -38,6 +40,12 @@ export default function App() {
     });
   }, [user]);
 
+  // Refresh today's usage whenever chats change (a new chat, or a question updating a chat).
+  useEffect(() => {
+    if (!user) return;
+    api.usage().then(setUsage).catch(() => {});
+  }, [user, sections]);
+
   const upsertSection = useCallback((section: Section) => {
     setSections((list) =>
       [section, ...list.filter((s) => s.id !== section.id)].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
@@ -45,10 +53,15 @@ export default function App() {
   }, []);
 
   const newChat = useCallback(async () => {
-    const section = await api.createSection();
-    setSections((list) => [section, ...list]);
-    setActiveId(section.id);
-    setSidebarOpen(false);
+    try {
+      const section = await api.createSection();
+      setNotice(null);
+      setSections((list) => [section, ...list]);
+      setActiveId(section.id);
+      setSidebarOpen(false);
+    } catch (err) {
+      setNotice(describeError(err, "Couldn't start a new chat."));
+    }
   }, []);
 
   const deleteChat = useCallback(
@@ -80,6 +93,7 @@ export default function App() {
         sections={sections}
         activeId={activeId}
         user={user}
+        usage={usage}
         onSelect={(id) => {
           setActiveId(id);
           setSidebarOpen(false);
@@ -93,6 +107,14 @@ export default function App() {
         <button className="menu-button" aria-label="Open sidebar" onClick={() => setSidebarOpen(true)}>
           ☰
         </button>
+        {notice && (
+          <div className="notice" role="alert">
+            {notice}
+            <button className="icon" aria-label="Dismiss" onClick={() => setNotice(null)}>
+              ×
+            </button>
+          </div>
+        )}
         {activeId ? (
           <ChatView key={activeId} sectionId={activeId} onSectionChange={upsertSection} onNewChat={newChat} />
         ) : (

@@ -10,7 +10,7 @@ from .. import storage
 from ..config import get_settings
 from ..errors import AppError
 from ..models import Document, DocumentChunk, SectionDocument
-from . import providers
+from . import providers, usage
 from .sections import get_owned_section
 
 CONTENT_TYPES = {
@@ -41,6 +41,7 @@ async def save_upload(
     if section_id is not None:
         await get_owned_section(session, section_id, user_id)
 
+    await usage.reserve(session, user_id, "upload")
     document_id = uuid.uuid4()
     path = storage.path_for(user_id, document_id, extension)
     size = await storage.save_upload(upload, path, get_settings().max_upload_mb * 1024 * 1024)

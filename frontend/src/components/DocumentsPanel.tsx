@@ -1,5 +1,5 @@
 import { ChangeEvent, Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../api";
+import { api, describeError } from "../api";
 import type { DocumentInfo } from "../types";
 
 interface Props {
@@ -42,7 +42,7 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
       );
       onDocsChange((current) => [...current, doc]);
     } catch (err) {
-      setError(`${file.name}: ${err instanceof ApiError ? err.message : "upload failed"}`);
+      setError(`${file.name}: ${describeError(err, "upload failed")}`);
     } finally {
       setInFlight((list) => list.filter((u) => u.key !== key));
     }

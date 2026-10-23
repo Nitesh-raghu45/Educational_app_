@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     ingest_mode: str = "queue"
 
     max_questions_per_section: int = 30
+    # Daily per-user caps on costly actions (reset at midnight UTC; 0 = unlimited). The per-chat
+    # limit alone doesn't cap cost, since anyone can open more chats.
+    daily_question_limit: int = 100
+    daily_quiz_limit: int = 20
+    daily_upload_limit: int = 30
+    daily_chat_limit: int = 20
     rate_limit_per_minute: int = 20
 
     groq_api_key: str = ""

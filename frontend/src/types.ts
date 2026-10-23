@@ -70,6 +70,16 @@ export interface Attempt {
   results: QuestionResult[];
 }
 
+export interface UsageItem {
+  used: number;
+  limit: number; // 0 = unlimited
+}
+
+export interface Usage {
+  resets_at: string;
+  limits: Record<"question" | "quiz" | "upload" | "chat", UsageItem>;
+}
+
 export interface StartEvent {
   section: Section;
   user_message: Message;

@@ -10,6 +10,7 @@ from ..errors import AppError
 from ..models import User
 from ..schemas import Credentials, TokenOut, UserOut
 from ..security import create_access_token, current_user, hash_password, verify_password
+from ..services import usage
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -40,3 +41,12 @@ async def login(body: Credentials, session: AsyncSession = Depends(get_session))
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(current_user)) -> User:
     return user
+
+
+usage_router = APIRouter(prefix="/usage", tags=["usage"])
+
+
+@usage_router.get("")
+async def my_usage(user: User = Depends(current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Today's usage against the daily limits (limit 0 = unlimited)."""
+    return await usage.get_usage(session, user.id)

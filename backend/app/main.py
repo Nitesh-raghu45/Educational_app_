@@ -153,7 +153,7 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=exc.to_body())
 
 
-for router in (auth.router, sections.router, documents.router, quizzes.router):
+for router in (auth.router, auth.usage_router, sections.router, documents.router, quizzes.router):
     app.include_router(router, prefix="/api/v1")
 
 
