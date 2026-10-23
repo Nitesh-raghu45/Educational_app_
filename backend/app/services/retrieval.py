@@ -1,5 +1,6 @@
 import asyncio
 import random
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +38,24 @@ class Evidence:
             "score": round(self.score, 3),
             "matched_by": self.matched_by,
         }
+
+
+# Document text and file names are untrusted: they must not be able to close a <source> block
+# early or fake a new one, which could pass their contents off as instructions.
+_TAG_RE = re.compile(r"<\s*/?\s*source\b", re.IGNORECASE)
+
+
+def _defuse(text: str) -> str:
+    return _TAG_RE.sub(lambda m: m.group(0).replace("<", "‹"), text)
+
+
+def format_sources(evidence: list[Evidence]) -> str:
+    blocks = []
+    for i, e in enumerate(evidence, 1):
+        name = _defuse(e.filename).replace('"', "'").replace(">", "›")
+        page = f' page="{e.page}"' if e.page else ""
+        blocks.append(f'<source id="{i}" file="{name}"{page}>\n{_defuse(e.text)}\n</source>')
+    return "\n\n".join(blocks)
 
 
 async def _load_chunks(

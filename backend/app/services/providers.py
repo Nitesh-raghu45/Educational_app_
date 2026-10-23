@@ -4,6 +4,7 @@ Created lazily so the API starts without API keys or the embedding model downloa
 replaceable with fakes in tests via `override()`.
 """
 
+import re
 from typing import Any, AsyncIterator, Protocol
 
 from ..config import get_settings
@@ -33,10 +34,10 @@ _llm: LLM | None = None
 def embedder() -> Embedder:
     global _embedder
     if _embedder is None:
-        from .embeddings import MiniLMEmbedder
+        from .embeddings import create_embedder
 
         settings = get_settings()
-        _embedder = MiniLMEmbedder(settings.embedding_model, settings.embedding_cache_dir, settings.embedding_batch_size)
+        _embedder = create_embedder(settings.embedding_model, settings.embedding_cache_dir, settings.embedding_batch_size)
     return _embedder
 
 
@@ -63,6 +64,16 @@ def override(*, embedder: Embedder | None = None, store: VectorStore | None = No
     _embedder, _store, _llm = embedder, store, llm
 
 
-def namespace_for(user_id: Any) -> str:
-    """Each student's vectors live in their own Pinecone namespace."""
-    return f"user-{user_id}"
+# Vectors made by this model live in the original namespace names, so they stay usable if the
+# model is switched back.
+LEGACY_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def namespace_for(user_id: Any, model: str | None = None) -> str:
+    """Each student's vectors live in their own Pinecone namespace, one per embedding model:
+    vectors from different models can't be compared, so they must never be searched together."""
+    model = model or get_settings().embedding_model
+    if model == LEGACY_EMBEDDING_MODEL:
+        return f"user-{user_id}"
+    slug = re.sub(r"[^a-z0-9]+", "-", model.split("/")[-1].lower()).strip("-")
+    return f"user-{user_id}--{slug}"

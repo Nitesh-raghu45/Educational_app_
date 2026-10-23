@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     pinecone_cloud: str = "aws"
     pinecone_region: str = "us-east-1"
 
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Multilingual (50+ languages incl. Hindi/Hinglish). Changing the model re-embeds existing
+    # documents automatically at startup, into a separate Pinecone namespace per model.
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_dim: int = 384
     # Where the ONNX model is downloaded to (baked into the Docker image at /models).
     embedding_cache_dir: str = "./data/models"
@@ -49,14 +51,23 @@ class Settings(BaseSettings):
     # matters on small hosts such as Render's free 512 MB instances.
     embedding_batch_size: int = 8
 
+    # Chunks are measured in the embedding model's tokens when it can count them (the multilingual
+    # model reads at most 128 tokens), otherwise in characters (chunk_size / chunk_overlap).
+    chunk_tokens: int = 120
+    chunk_overlap_tokens: int = 20
     chunk_size: int = 1000
     chunk_overlap: int = 150
-    retrieval_top_k: int = 8
+    # Smaller (token-sized) chunks, so more of them are retrieved to give the LLM similar context.
+    retrieval_top_k: int = 12
     retrieval_min_score: float = 0.25
     # Hybrid search: BM25 keyword search alongside vector search, merged with reciprocal rank fusion.
     hybrid_search: bool = True
-    retrieval_candidates: int = 20
+    retrieval_candidates: int = 30
     rrf_k: int = 60
+    # OCR for images and for PDF pages that have no text layer (scanned notes).
+    ocr_languages: str = "eng+hin"
+    ocr_max_pages: int = 40
+    ocr_dpi: int = 200
     history_window: int = 8
     summary_min_new_messages: int = 4
 

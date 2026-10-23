@@ -10,7 +10,7 @@ section accepts **30 questions**. After that it becomes read-only and the studen
 | API | FastAPI (stateless, so you can run several replicas) |
 | Database | **MariaDB**: users, sections, messages, quotas, documents, chunk text, quizzes |
 | Vector DB | **Pinecone** serverless index (384-dim, cosine), one namespace per student |
-| Embeddings | **all-MiniLM-L6-v2**, run locally on CPU with ONNX Runtime (`fastembed`, so no PyTorch) |
+| Embeddings | **paraphrase-multilingual-MiniLM-L12-v2** (50+ languages incl. Hindi), run locally on CPU with ONNX Runtime (no PyTorch) |
 | LLM | **Groq**: `openai/gpt-oss-120b` for answers and quizzes, `openai/gpt-oss-20b` for query rewriting and summaries (reasoning hidden from students) |
 | Queue / cache | Redis: arq ingestion queue and per-user rate limits |
 | File storage | Private volume (`/data/uploads`), standing in for object storage |
@@ -42,7 +42,7 @@ arq app.worker.WorkerSettings     # second terminal: ingestion worker
 ```
 
 To skip the worker, set `INGEST_MODE=inline` and ingestion runs inside the API process.
-Image OCR needs the [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) binary on your PATH.
+OCR (photos and scanned PDFs) needs the [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) binary on your PATH, with the Hindi language pack if you want Hindi OCR.
 The Docker image already includes it.
 
 Frontend (from `frontend/`). The dev server proxies `/api` to `localhost:8000`:
@@ -92,7 +92,7 @@ stream with `fetch()` because `EventSource` can't send a POST body or an `Author
 1. Load the last 8 completed messages and the section's rolling summary.
 2. Rewrite follow-ups ("explain that again") into a standalone query with the fast Groq model.
 3. **Hybrid search**, run in parallel:
-   - Vector search: embed the query with MiniLM and query Pinecone in the student's namespace, filtered to `document_id ∈ section's ready documents`. Matches below `RETRIEVAL_MIN_SCORE` are dropped.
+   - Vector search: embed the query with multilingual MiniLM and query Pinecone in the student's namespace, filtered to `document_id ∈ section's ready documents`. Matches below `RETRIEVAL_MIN_SCORE` are dropped.
    - Keyword search: BM25 over the stored chunk text ([services/keyword.py](backend/app/services/keyword.py)), with stopwords removed and words stemmed. A chunk must share at least 2 query terms (1 for a one-word query). Term statistics are cached per document.
 4. Merge both lists with reciprocal rank fusion (RRF) and keep the top `RETRIEVAL_TOP_K`. Load chunk text from the database, which re-checks ownership. Each citation records `matched_by`: `vector`, `keyword` or `both`.
 5. **Evidence gate:** with no evidence, the app returns a fixed "couldn't find it in your documents" answer and never calls the LLM.
@@ -100,16 +100,29 @@ stream with `fetch()` because `EventSource` can't send a POST body or an `Author
 7. Save the answer with its cited chunks. Fold older messages into the rolling summary, so all 30 turns keep context without sending every turn to the LLM.
 
 ### Document ingestion ([services/ingestion.py](backend/app/services/ingestion.py))
-Upload → private storage → arq job (or inline) → parse (pypdf / python-docx / Tesseract OCR) →
-**recursive chunking** → MiniLM embeddings → Pinecone upsert (vector id = chunk id) → chunk text into
-MariaDB → `ready`. The UI shows upload progress and a processing spinner, and polls
-`GET /documents/{id}/status`.
+Upload → private storage → arq job (or inline) → parse (pypdf / python-docx, plus Tesseract OCR) →
+**recursive, token-aware chunking** → multilingual MiniLM embeddings → Pinecone upsert (vector id =
+chunk id) → chunk text into MariaDB → `ready`. The UI shows upload progress and a processing spinner,
+and polls `GET /documents/{id}/status`.
 
+- **OCR:** photos (PNG/JPG) and **scanned PDF pages**, meaning pages with no text layer, are read by
+  Tesseract in English and Hindi (`OCR_LANGUAGES=eng+hin`). Scanned pages are rendered with pypdfium2 at
+  `OCR_DPI` (200), up to `OCR_MAX_PAGES` (40) per document. Images are rotated using their EXIF data,
+  converted to greyscale, enlarged when small, and auto-contrasted first.
+- **Multilingual embeddings:** `paraphrase-multilingual-MiniLM-L12-v2` (50+ languages, including Hindi
+  and Hinglish) runs locally on ONNX Runtime, with its compact SentencePiece vocabulary and with weights
+  stored as ONNX external data, which is memory-mapped (the Docker build converts it). The whole API
+  peaks at about 310 MB, versus about 650 MB through fastembed, with identical vectors, so it fits a
+  512 MB host.
 - **Recursive chunking:** text is split on the coarsest boundary that fits, in this order: paragraphs,
-  lines, sentences, clauses, words, then characters. Neighbouring pieces are merged up to `CHUNK_SIZE`
-  (1000 characters). So paragraphs stay whole when they fit, and neighbouring chunks share up to
-  `CHUNK_OVERLAP` (150) characters of whole sentences. PDFs are chunked page by page, so citations keep
-  their page numbers.
+  lines, sentences, clauses, words, then characters. Neighbouring pieces are merged up to `CHUNK_TOKENS`
+  (120) of the model's tokens, within its 128-token limit, so no chunk is cut off when embedded. Chunks
+  share up to `CHUNK_OVERLAP_TOKENS` (20) of whole sentences. PDFs are chunked page by page, so citations
+  keep their page numbers.
+- **Changing the embedding model:** each model has its own Pinecone namespace, and
+  `document_embeddings` records which model each document used. At startup, documents embedded with
+  another model are re-embedded in the background: from the file if it is still on disk, otherwise from
+  the chunk text stored in the database, so nobody needs to re-upload.
 - **Reliability:** Pinecone calls have timeouts and retries. Documents left processing by a restart are
   picked up again at startup. If the file was lost (Render's disk is wiped on restart), the document is
   marked failed with "please upload again".
@@ -150,7 +163,7 @@ Attempts are scored and stored.
 ## Production next steps
 - Replace `create_all` on startup with Alembic migrations before running several API replicas.
 - Move uploads to S3/GCS/R2 with private buckets. `storage.py` is the only module that touches files.
-- Add malware scanning and MIME sniffing on uploads, OCR for scanned PDFs (pdf2image + Poppler), and refresh tokens or SSO.
+- Add malware scanning and MIME sniffing on uploads, and refresh tokens or SSO.
 
 ## Deploy to Render
 

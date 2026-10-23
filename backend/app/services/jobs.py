@@ -57,6 +57,18 @@ async def _ingest_inline(document_id: uuid.UUID) -> None:
         await ingest_document(document_id)
 
 
+async def _reembed_inline(document_id: uuid.UUID) -> None:
+    from .ingestion import reembed_document
+
+    async with _inline_ingestion_slot():
+        await reembed_document(document_id)
+
+
+def enqueue_reembed(document_id: uuid.UUID) -> None:
+    """Re-embed with the current model, sharing the one-at-a-time slot with new uploads."""
+    spawn(_reembed_inline(document_id))
+
+
 async def enqueue_ingestion(document_id: uuid.UUID) -> None:
     settings = get_settings()
     if settings.ingest_mode == "inline":

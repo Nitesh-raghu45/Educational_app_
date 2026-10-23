@@ -112,6 +112,20 @@ class DocumentChunk(Base):
     text: Mapped[str] = mapped_column(Text)
 
 
+class DocumentEmbedding(Base):
+    """Which embedding model a document's vectors were made with. When the configured model
+    changes, documents without a row for it are re-embedded at startup. (A separate table, so
+    adding it needs no migration of existing tables.)"""
+
+    __tablename__ = "document_embeddings"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    model: Mapped[str] = mapped_column(String(200), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
 class SectionDocument(Base):
     """Which documents a section is allowed to retrieve from."""
 

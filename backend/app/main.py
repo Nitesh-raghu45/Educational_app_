@@ -11,7 +11,7 @@ from .api import auth, documents, quizzes, sections
 from .config import get_settings
 from .db import SessionLocal, create_tables, engine
 from .errors import AppError
-from .models import Document
+from .models import Document, DocumentEmbedding
 from .ratelimit import get_redis
 from .services import jobs, providers
 
@@ -46,8 +46,37 @@ async def lifespan(app: FastAPI):
     # first upload or question after a (re)start wait 10-20 s for them.
     jobs.spawn(warm_up())
     jobs.spawn(resume_unfinished_ingestion())
+    jobs.spawn(reembed_outdated_documents())
     yield
     await engine.dispose()
+
+
+async def reembed_outdated_documents() -> None:
+    """After the embedding model changes, re-embed every ready document that was embedded with
+    another model, in the background, one at a time. Until then those documents still answer
+    through keyword search."""
+    model = get_settings().embedding_model
+    try:
+        async with SessionLocal() as session:
+            current = select(DocumentEmbedding.document_id).where(DocumentEmbedding.model == model)
+            ids = list(
+                await session.scalars(
+                    select(Document.id).where(Document.status == "ready", Document.id.not_in(current))
+                )
+            )
+            if ids and model == providers.LEGACY_EMBEDDING_MODEL:
+                # Documents from before model tracking were embedded with this model already.
+                untracked = select(DocumentEmbedding.document_id)
+                legacy = list(await session.scalars(select(Document.id).where(Document.id.in_(ids), Document.id.not_in(untracked))))
+                session.add_all(DocumentEmbedding(document_id=i, model=model) for i in legacy)
+                await session.commit()
+                ids = [i for i in ids if i not in set(legacy)]
+        for document_id in ids:
+            jobs.enqueue_reembed(document_id)
+        if ids:
+            logger.info("Re-embedding %d document(s) with %s in the background", len(ids), model)
+    except Exception:
+        logger.warning("Could not check documents for re-embedding", exc_info=True)
 
 
 async def resume_unfinished_ingestion() -> None:

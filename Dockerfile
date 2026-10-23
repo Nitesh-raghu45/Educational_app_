@@ -7,11 +7,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    EMBEDDING_CACHE_DIR=/models
+    EMBEDDING_CACHE_DIR=/models \
+    HF_HUB_DISABLE_XET=1
 
-# Tesseract is only for reading text from uploaded images (~30 MB); remove this line if you don't need OCR.
+# Tesseract OCR reads photos of notes and scanned PDF pages, in English and Hindi.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -19,8 +20,14 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
 
-# Bake the ONNX all-MiniLM-L6-v2 model (~90 MB) into the image so containers start without downloading it.
-RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/models')"
+# Bake the multilingual embedding model into the image, with its weights stored as ONNX external
+# data so they are memory-mapped at run time (load peak ~60 MB instead of ~480 MB). `onnx` is only
+# needed for that one-off conversion.
+COPY backend/app/services/embeddings.py /tmp/embeddings.py
+RUN pip install onnx==1.17.0 \
+    && python /tmp/embeddings.py /models \
+    && pip uninstall -y onnx \
+    && rm /tmp/embeddings.py
 
 COPY backend/app ./app
 
