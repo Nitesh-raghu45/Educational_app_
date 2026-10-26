@@ -1,31 +1,14 @@
-import { ReactNode, useState } from "react";
+import { isValidElement, lazy, ReactNode, Suspense, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import type { Citation } from "../types";
+import { CITE_LINK, prepareAnswer } from "../visuals/markdownPrep";
+import ChartBlock from "./ChartBlock";
 
-// The model cites as [1], 【1】 or 【1†source】.
-const CITATION_RE = /[[【](\d{1,2})(?:†[^\]】]*)?[\]】]/g;
-const CITE_LINK = "#cite-";
-// A run of citation links followed by sentence punctuation (incl. the Hindi danda "।").
-const CITES_BEFORE_PUNCTUATION_RE = /\s*((?:\[\d{1,2}\]\(#cite-\d{1,2}\))+)\s*([.,;:!?।])/g;
-
-/** Models often write LaTeX's \[ … \] and \( … \); the math plugin understands $$ … $$ and $ … $.
- * (Replacement functions return text literally, so "$" needs no escaping.) */
-export function normalizeMath(markdown: string): string {
-  return markdown
-    .replace(/\\\[([\s\S]+?)\\\]/g, (_, expr: string) => `\n$$\n${expr.trim()}\n$$\n`)
-    .replace(/\\\(([\s\S]+?)\\\)/g, (_, expr: string) => `$${expr.trim()}$`);
-}
-
-/** Turn citation markers into links the renderer shows as chips, drop repeats of the same
- * number in a row, and move punctuation in front of them ("text [1] ." -> "text. [1]"). */
-export function prepareCitations(markdown: string): string {
-  let text = markdown.replace(CITATION_RE, (_, n: string) => `[${n}](${CITE_LINK}${n})`);
-  text = text.replace(/(\[(\d{1,2})\]\(#cite-\2\))(?:\s*\[\2\]\(#cite-\2\))+/g, "$1");
-  return text.replace(CITES_BEFORE_PUNCTUATION_RE, "$2 $1");
-}
+// The diagram renderer pulls in Mermaid, so it is only downloaded when a diagram appears.
+const MermaidBlock = lazy(() => import("./MermaidBlock"));
 
 const POPOVER_WIDTH = 320;
 
@@ -92,7 +75,31 @@ function CodeBlock({ children }: { children: ReactNode }) {
   );
 }
 
-export default function AnswerMarkdown({ content, citations }: { content: string; citations: Citation[] | null }) {
+/** Language and text of a fenced code block, from react-markdown's <pre><code class="language-x"> */
+function codeInfo(children: ReactNode): { language: string | null; text: string } {
+  const child = Array.isArray(children) ? children[0] : children;
+  if (!isValidElement<{ className?: string; children?: ReactNode }>(child)) return { language: null, text: "" };
+  const language = /language-([\w-]+)/.exec(child.props.className ?? "")?.[1] ?? null;
+  const text = String(child.props.children ?? "").replace(/\n$/, "");
+  return { language, text };
+}
+
+function VisualPlaceholder({ kind }: { kind: string }) {
+  return (
+    <div className="visual visual-loading">
+      <span className="spinner" aria-hidden="true" /> {kind === "chart" ? "Preparing chart…" : "Drawing diagram…"}
+    </div>
+  );
+}
+
+interface Props {
+  content: string;
+  citations: Citation[] | null;
+  /** While the answer streams, visual blocks are incomplete: show a placeholder instead. */
+  streaming?: boolean;
+}
+
+export default function AnswerMarkdown({ content, citations, streaming = false }: Props) {
   const byIndex = new Map((citations ?? []).map((c) => [String(c.index), c]));
   const components: Components = {
     a({ href, children }) {
@@ -114,12 +121,23 @@ export default function AnswerMarkdown({ content, citations }: { content: string
       );
     },
     pre({ children }) {
+      const { language, text } = codeInfo(children);
+      if (language === "mermaid" || language === "chart") {
+        if (streaming) return <VisualPlaceholder kind={language} />;
+        return language === "chart" ? (
+          <ChartBlock source={text} />
+        ) : (
+          <Suspense fallback={<VisualPlaceholder kind="mermaid" />}>
+            <MermaidBlock source={text} />
+          </Suspense>
+        );
+      }
       return <CodeBlock>{children}</CodeBlock>;
     },
   };
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>
-      {prepareCitations(normalizeMath(content))}
+      {prepareAnswer(content)}
     </ReactMarkdown>
   );
 }

@@ -1,10 +1,13 @@
 import { useState } from "react";
 import type { Message } from "../types";
+import { hasVisual, stripCitations } from "../visuals/markdownPrep";
 import AnswerMarkdown from "./AnswerMarkdown";
 
 interface Props {
   message: Message;
   onRetry?: () => void;
+  /** Ask for a diagram/chart of this answer (offered on the latest answer only). */
+  onVisualize?: () => void;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -25,7 +28,7 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export default function MessageBubble({ message, onRetry }: Props) {
+export default function MessageBubble({ message, onRetry, onVisualize }: Props) {
   const [openSource, setOpenSource] = useState<string | null>(null);
 
   if (message.role === "user") {
@@ -52,7 +55,7 @@ export default function MessageBubble({ message, onRetry }: Props) {
           </div>
         ) : (
           <div className="markdown">
-            <AnswerMarkdown content={message.content} citations={message.citations} />
+            <AnswerMarkdown content={message.content} citations={message.citations} streaming={streaming} />
             {message.status === "streaming" && <span className="cursor" />}
           </div>
         )}
@@ -81,7 +84,13 @@ export default function MessageBubble({ message, onRetry }: Props) {
 
         {message.status === "completed" && message.content && (
           <div className="msg-actions">
-            <CopyButton text={message.content.replace(/[[【]\d{1,2}(?:†[^\]】]*)?[\]】]/g, "")} />
+            <CopyButton text={stripCitations(message.content)} />
+            {onVisualize && !hasVisual(message.content) && (
+              <button type="button" className="msg-action" onClick={onVisualize}
+                title="Draw a diagram or chart of this answer (uses 1 question)">
+                ◇ Visualize
+              </button>
+            )}
           </div>
         )}
 

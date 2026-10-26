@@ -11,6 +11,10 @@ interface Props {
   onNewChat: () => void;
 }
 
+// Sent by the Visualize button. "previous answer" makes the backend resolve what to draw from
+// the conversation, and the answer rules keep the visual grounded in the documents.
+const VISUALIZE_REQUEST = "Show your previous answer as a diagram or chart, using only my documents.";
+
 function newClientId(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
@@ -129,14 +133,14 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
     }
   }
 
-  async function send() {
-    const content = draft.trim();
+  async function send(text?: string) {
+    const content = (text ?? draft).trim();
     if (!content || sending) return;
     const clientId = newClientId();
     const now = new Date().toISOString();
     const userId = `tmp-u-${clientId}`;
     const assistantId = `tmp-a-${clientId}`;
-    setDraft("");
+    if (text === undefined) setDraft("");
     setMessages((ms) => [
       ...ms,
       { id: userId, role: "user", content, citations: null, status: "completed", reply_to_id: null, created_at: now },
@@ -190,8 +194,17 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
               </p>
             </div>
           )}
-          {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} onRetry={!sending && m.role === "assistant" ? () => retry(m.id) : undefined} />
+          {messages.map((m, i) => (
+            <MessageBubble
+              key={m.id}
+              message={m}
+              onRetry={!sending && m.role === "assistant" ? () => retry(m.id) : undefined}
+              onVisualize={
+                !sending && i === messages.length - 1 && m.role === "assistant" && section.status === "active"
+                  ? () => send(VISUALIZE_REQUEST)
+                  : undefined
+              }
+            />
           ))}
           <div ref={bottomRef} />
         </div>
@@ -237,7 +250,7 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
               maxLength={4000}
               disabled={sending}
             />
-            <button className="send" onClick={send} disabled={sending || !draft.trim()} aria-label="Send">
+            <button className="send" onClick={() => send()} disabled={sending || !draft.trim()} aria-label="Send">
               ↑
             </button>
           </div>

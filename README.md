@@ -101,6 +101,19 @@ Answers render ChatGPT/Claude-style ([AnswerMarkdown.tsx](frontend/src/component
 - **Code:** code blocks with a Copy button.
 - **Text:** fonts that render Hindi (Devanagari) cleanly, and a Copy-answer button.
 
+### Visual answers
+When a picture helps, the model adds one visual block, built only from the student's documents:
+- **Diagrams** (` ```mermaid `): flowcharts, sequence diagrams, mind maps and timelines, rendered by
+  [MermaidBlock.tsx](frontend/src/components/MermaidBlock.tsx). Mermaid (~140 kB gzipped) is loaded
+  only when an answer has a diagram, and runs with `securityLevel: "strict"`. Each diagram has Code and
+  Expand (full-screen, Esc to close) buttons.
+- **Charts** (` ```chart ` with JSON): bar, line, pie and function graphs (e.g. `P(d) = 100/d^2`), drawn
+  as SVG by [ChartBlock.tsx](frontend/src/components/ChartBlock.tsx), with a "Show data" table.
+  Formulas go through a small safe parser ([visuals/expr.ts](frontend/src/visuals/expr.ts)), never `eval`.
+- **Visualize button:** on the latest answer without a visual; it asks for a diagram or chart of that
+  answer (uses one question).
+- If a block is invalid, the answer shows its code instead of breaking. Tests: `cd frontend && npm test`.
+
 ### Streaming (SSE)
 `POST /api/v1/sections/{id}/messages` returns `text/event-stream` with these events:
 `message_start` (saved message IDs and the updated quota) → `token`… → `citations` → `done`, or `error`.

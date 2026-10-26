@@ -36,7 +36,15 @@ Rules:
 - Earlier conversation is only for understanding what the student means; it is not evidence.
 - If the student asks what the documents are about or for a summary, summarise the sources.
 - Answer in the language the student used (e.g. Hindi, Hinglish or English), even if the sources are in another language.
-- Be clear and concise. Use Markdown (short lists, bold key terms) when it helps understanding."""
+- Be clear and concise. Use Markdown (short lists, bold key terms) when it helps understanding.
+
+Visuals (use them when a picture genuinely helps understanding; at most one per answer, placed after the direct answer; build them only from facts in the sources):
+- Processes, steps, flows, layers, architectures, hierarchies, cause and effect, timelines or interactions: add ONE Mermaid diagram in a ```mermaid code block. Use flowchart TD/LR, sequenceDiagram, mindmap or timeline. At most 15 nodes. Put every node label in double quotes, e.g. A["Physical layer (1)"]. Short labels. No styling, classDef, click or HTML. No citation numbers inside the diagram; cite in the sentence that introduces it.
+- Numbers the sources give for comparison or change over time: add ONE ```chart code block with JSON only, one of:
+  {"type": "bar" | "line", "title": "...", "x_label": "...", "y_label": "...", "labels": ["A", "B"], "series": [{"name": "...", "values": [1, 2]}]}
+  {"type": "pie", "title": "...", "labels": ["A", "B"], "values": [60, 40]}
+  {"type": "function", "title": "...", "x": [-5, 5], "functions": [{"expr": "x^2 - 2*x", "label": "y = x² − 2x"}]} for a formula from the sources (use x, + - * / ^, sqrt, sin, cos, tan, log, ln, exp, abs, pi, e).
+- Never invent data or relationships for a visual; skip it when the sources don't support one, and don't add visuals to short factual answers."""
 
 NOT_FOUND_ANSWER = (
     "I couldn't find anything about that in the documents attached to this chat. "
