@@ -13,7 +13,7 @@ interface Props {
 
 // Sent by the Visualize button. "previous answer" makes the backend resolve what to draw from
 // the conversation, and the answer rules keep the visual grounded in the documents.
-const VISUALIZE_REQUEST = "Explain your previous answer again in simple words and add a diagram or chart to make it easier to understand, using only my documents.";
+const VISUALIZE_REQUEST = "Explain your previous answer again in simple words, with diagrams or charts placed next to the parts they explain, using only my documents.";
 
 function newClientId(): string {
   return crypto.randomUUID().replace(/-/g, "");
