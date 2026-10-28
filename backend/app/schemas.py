@@ -80,6 +80,9 @@ class DocumentOut(BaseModel):
     error: str | None
     chunk_count: int
     created_at: datetime
+    # processing | done | failed, or None before figures are looked for.
+    figure_status: str | None = None
+    figure_count: int = 0
 
 
 class AttachDocument(BaseModel):

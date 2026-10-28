@@ -39,9 +39,11 @@ Rules:
 - Be clear and concise. Use Markdown (short lists, bold key terms) when it helps understanding.
 
 Visuals (use them when a picture genuinely helps understanding; build them only from facts in the sources):
-- Place each visual inline, directly after the paragraph, list or section it illustrates, never collected at the end. The text around it stays complete: a visual is an extra aid, not a replacement for the explanation. Example layout: "### How a request travels" → steps → its flowchart → "### Three-way handshake" → steps → its sequence diagram.
+- Place each visual inline, directly after the paragraph, list or section it illustrates, never collected at the end, and never under its own heading such as "Visual", "Diagram" or "Visual summary". The text around it stays complete: a visual is an extra aid, not a replacement for the explanation. Example layout: "### How a request travels" → steps → its flowchart → "### Three-way handshake" → steps → its sequence diagram.
 - When an answer explains a process, sequence of steps or structure in its own section, give that section its own visual; up to 3 visuals per answer. Short factual answers need none.
 - If the student asks ONLY for a diagram, chart, graph, flowchart or mind map (e.g. "just the diagram", "only a flowchart", "draw …"), give only that visual with at most one short sentence introducing it (cite there), and no further explanation.
+- Sources with kind="figure" are real figures (diagrams, charts, photos) from the student's documents, given as text descriptions. To show one, write [[figure:N]] (N = its source number) on its own line, directly after the paragraph or list it illustrates (not in a separate section at the end); it appears as the actual image with its title and source, so add no caption line of your own. When a real figure shows the same thing you would draw, show the figure INSTEAD of a Mermaid diagram or chart, never both. Show each figure at most once, and only figures that match what you are explaining. Facts from a figure's description are cited like any source.
+- Choosing a visual: if a kind="figure" source shows what the section explains, use [[figure:N]] there and draw nothing for that section. Draw a diagram or chart only when no figure fits.
 - Processes, steps, flows, layers, architectures, hierarchies, cause and effect, timelines or interactions: add a Mermaid diagram in a ```mermaid code block. Use flowchart TD/LR, sequenceDiagram, mindmap or timeline. At most 15 nodes. Put every node label in double quotes, e.g. A["Physical layer (1)"]. Short labels. No styling, classDef, click or HTML. No citation numbers inside the diagram; cite in the sentence that introduces it.
 - Numbers the sources give for comparison or change over time: add a ```chart code block with JSON only, one of:
   {"type": "bar" | "line", "title": "...", "x_label": "...", "y_label": "...", "labels": ["A", "B"], "series": [{"name": "...", "values": [1, 2]}]}
@@ -70,6 +72,7 @@ def is_overview_question(question: str) -> bool:
 
 # gpt-oss models sometimes cite as 【1】 or 【1†source】 instead of [1]; accept all of them.
 _CITATION_RE = re.compile(r"[\[【](\d{1,2})(?:†[^\]】]*)?[\]】]")
+FIGURE_REF_RE = re.compile(r"\[\[\s*figure\s*:\s*(\d{1,2})\s*\]\]", re.IGNORECASE)
 
 
 def build_messages(
@@ -87,10 +90,15 @@ def build_messages(
 
 
 def extract_citations(answer: str, evidence: list[Evidence]) -> list[dict[str, Any]]:
+    """Sources the answer cites ([n]) or shows as figures ([[figure:n]]), in order of first use."""
     used: list[int] = []
     for match in _CITATION_RE.finditer(answer):
         n = int(match.group(1))
         if 1 <= n <= len(evidence) and n not in used:
+            used.append(n)
+    for match in FIGURE_REF_RE.finditer(answer):
+        n = int(match.group(1))
+        if 1 <= n <= len(evidence) and evidence[n - 1].figure and n not in used:
             used.append(n)
     return [evidence[n - 1].citation(index=n) for n in used]
 

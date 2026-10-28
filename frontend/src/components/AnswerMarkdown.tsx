@@ -6,6 +6,7 @@ import remarkMath from "remark-math";
 import type { Citation } from "../types";
 import { CITE_LINK, prepareAnswer } from "../visuals/markdownPrep";
 import ChartBlock from "./ChartBlock";
+import FigureBlock from "./FigureBlock";
 
 // The diagram renderer pulls in Mermaid, so it is only downloaded when a diagram appears.
 const MermaidBlock = lazy(() => import("./MermaidBlock"));
@@ -87,7 +88,8 @@ function codeInfo(children: ReactNode): { language: string | null; text: string 
 function VisualPlaceholder({ kind }: { kind: string }) {
   return (
     <div className="visual visual-loading">
-      <span className="spinner" aria-hidden="true" /> {kind === "chart" ? "Preparing chart…" : "Drawing diagram…"}
+      <span className="spinner" aria-hidden="true" />{" "}
+      {kind === "chart" ? "Preparing chart…" : kind === "figure" ? "Loading figure…" : "Drawing diagram…"}
     </div>
   );
 }
@@ -122,6 +124,12 @@ export default function AnswerMarkdown({ content, citations, streaming = false }
     },
     pre({ children }) {
       const { language, text } = codeInfo(children);
+      if (language === "figure") {
+        // The figure's image id arrives with the citations, after the text has streamed.
+        const citation = byIndex.get(text.trim());
+        if (citation?.figure) return <FigureBlock citation={citation} />;
+        return streaming ? <VisualPlaceholder kind="figure" /> : null;
+      }
       if (language === "mermaid" || language === "chart") {
         if (streaming) return <VisualPlaceholder kind={language} />;
         return language === "chart" ? (

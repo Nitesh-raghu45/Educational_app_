@@ -18,7 +18,13 @@ from ..errors import AppError
 from ..models import DailyUsage
 
 KINDS = ("question", "quiz", "upload", "chat")
-_LABELS = {"question": "questions", "quiz": "quizzes", "upload": "document uploads", "chat": "new chats"}
+_LABELS = {
+    "question": "questions",
+    "quiz": "quizzes",
+    "upload": "document uploads",
+    "chat": "new chats",
+    "figure": "figure descriptions",
+}
 
 
 def limit_for(kind: str) -> int:
@@ -29,6 +35,8 @@ def limit_for(kind: str) -> int:
         "quiz": settings.daily_quiz_limit,
         "upload": settings.daily_upload_limit,
         "chat": settings.daily_chat_limit,
+        # Not shown in the usage meter: when reached, new uploads just get no more figures today.
+        "figure": settings.daily_figure_limit,
     }[kind]
 
 

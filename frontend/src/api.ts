@@ -166,6 +166,13 @@ export const api = {
   detachDocument: (sectionId: string, documentId: string) =>
     request<void>("DELETE", `/sections/${sectionId}/documents/${documentId}`),
 
+  /** Figure images need the Authorization header, which an <img src> can't send. */
+  figureImage: async (id: string): Promise<Blob> => {
+    const res = await fetch(`${BASE}/figures/${id}`, { headers: authHeaders() });
+    if (!res.ok) throw await toApiError(res);
+    return res.blob();
+  },
+
   createQuiz: (sectionId: string, numQuestions: number, topic: string) =>
     request<Quiz>("POST", `/sections/${sectionId}/quizzes`, { num_questions: numQuestions, topic: topic || null }),
   submitAttempt: (quizId: string, answers: (number | null)[]) =>

@@ -114,6 +114,24 @@ When a picture helps, the model adds one visual block, built only from the stude
   answer (uses one question).
 - If a block is invalid, the answer shows its code instead of breaking. Tests: `cd frontend && npm test`.
 
+### Figures from documents ([services/figures.py](backend/app/services/figures.py))
+Real figures from the student's files appear in answers, next to the text they illustrate:
+1. **Extract:** after a document's text is ready, embedded images in PDFs and DOCX files are pulled out
+   (plus vector-drawn diagrams in PDFs, and photo uploads themselves). Icons, thin strips, scanned text
+   pages and images repeated on 3+ pages (logos) are skipped. At most `MAX_FIGURES_PER_DOCUMENT` (30).
+2. **Describe:** a Groq vision model (`qwen/qwen3.8-27b`) writes a title and description of each figure,
+   and drops ones with no study value. About 800 input tokens per figure, counted against a daily
+   per-user limit (`DAILY_FIGURE_LIMIT`).
+3. **Store and index:** images are saved as WebP in Cloudflare R2 (or local disk without R2 settings),
+   and each description becomes an extra searchable chunk, so hybrid search finds figures like text.
+4. **Answer:** figure sources are marked `kind="figure"`; the model shows one by writing `[[figure:N]]`,
+   which the app renders as the image with its title and page. Images are served only through
+   `GET /api/v1/figures/{id}` to the document's owner.
+
+Figures never block a document: questions work as soon as the text is ready, and a failed figure step
+leaves the document fully usable. Earlier uploads get their figures in the background at startup if
+their file is still on disk.
+
 ### Streaming (SSE)
 `POST /api/v1/sections/{id}/messages` returns `text/event-stream` with these events:
 `message_start` (saved message IDs and the updated quota) → `token`… → `citations` → `done`, or `error`.
@@ -206,3 +224,4 @@ Attempts are scored and stored.
 - **Documents are processed inline** (`INGEST_MODE=inline`). Render's free plan has no background workers, and its disk is wiped on restart.
 - **Memory:** `EMBEDDING_BATCH_SIZE=8` keeps peak memory around 315 MB, under the free plan's 512 MB.
 - **URLs:** set `VITE_API_URL` on `edu-web` to the API URL, and `CORS_ORIGINS` on `edu-api` to `["https://<edu-web>.onrender.com"]`.
+- **Figures:** set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` on `edu-api`, so figure images survive restarts. Without them, figures disappear when Render restarts.

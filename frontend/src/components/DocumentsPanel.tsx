@@ -119,7 +119,15 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
                 <span className="small muted">
                   {working ? "Reading & indexing… (large files can take a minute)" : formatSize(d.size_bytes)}
                   {d.status === "ready" ? ` · ${d.chunk_count} chunks` : ""}
+                  {d.status === "ready" && d.figure_status === "done" && d.figure_count > 0
+                    ? ` · ${d.figure_count} figure${d.figure_count === 1 ? "" : "s"}`
+                    : ""}
                 </span>
+                {d.status === "ready" && d.figure_status === "processing" && (
+                  <span className="small muted busy-label">
+                    <span className="spinner" aria-hidden="true" /> finding figures…
+                  </span>
+                )}
                 {!working && (
                   <button className="link small" onClick={() => detach(d.id)}>
                     Remove

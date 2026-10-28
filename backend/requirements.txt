@@ -18,3 +18,5 @@ pypdfium2==4.30.0
 python-docx==1.1.2
 pytesseract==0.3.13
 Pillow==11.0.0
+# Cloudflare R2 (S3-compatible) storage for figure images; imported only when R2 is configured.
+boto3==1.43.120

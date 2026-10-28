@@ -74,6 +74,18 @@ class Settings(BaseSettings):
     ocr_languages: str = "eng+hin"
     ocr_max_pages: int = 40
     ocr_dpi: int = 200
+    # Figures (diagrams, charts, photos) pulled out of uploads, described by a vision model so
+    # they can be found by search and shown in answers.
+    figures_enabled: bool = True
+    groq_vision_model: str = "qwen/qwen3.8-27b"
+    max_figures_per_document: int = 30
+    daily_figure_limit: int = 150
+    # Cloudflare R2 (S3-compatible) bucket for figure images. Empty = local disk under
+    # storage_dir/figures, which is fine locally but wiped on hosts like Render on restart.
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket: str = ""
     history_window: int = 8
     summary_min_new_messages: int = 4
 

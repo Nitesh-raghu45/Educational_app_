@@ -56,8 +56,11 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
 
   // Poll while documents are being processed.
   useEffect(() => {
-    if (!docs.some((d) => d.status === "pending" || d.status === "processing")) return;
-    const timer = setTimeout(reloadDocs, 1500);
+    const reading = docs.some((d) => d.status === "pending" || d.status === "processing");
+    // Figures are found after the text is ready (questions already work), so check less often.
+    const findingFigures = docs.some((d) => d.status === "ready" && d.figure_status === "processing");
+    if (!reading && !findingFigures) return;
+    const timer = setTimeout(reloadDocs, reading ? 1500 : 4000);
     return () => clearTimeout(timer);
   }, [docs, reloadDocs]);
 

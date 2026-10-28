@@ -138,6 +138,41 @@ class DocumentEmbedding(Base):
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
 
 
+class DocumentFigure(Base):
+    """A figure (diagram, chart, photo) from a document. Its caption is also stored as a
+    DocumentChunk with id `chunk_id`, so search finds figures like any other passage."""
+
+    __tablename__ = "document_figures"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    chunk_id: Mapped[str] = mapped_column(String(80), unique=True)
+    page: Mapped[int | None] = mapped_column(Integer)
+    storage_key: Mapped[str] = mapped_column(String(300))
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(200))
+    caption: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class FigureScan(Base):
+    """Whether a document's figures were extracted (one row per document): drives the
+    "N figures" label and the one-time backfill for documents uploaded before figures existed."""
+
+    __tablename__ = "figure_scans"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    # processing | done | failed
+    status: Mapped[str] = mapped_column(String(20), default="processing")
+    figure_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
 class SectionDocument(Base):
     """Which documents a section is allowed to retrieve from."""
 

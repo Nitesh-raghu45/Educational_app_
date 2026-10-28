@@ -28,6 +28,15 @@ describe("markdown preparation", () => {
     expect(mapOutsideCode("```\n\\(x\\)\n```", (t) => t.toUpperCase())).toBe("```\n\\(x\\)\n```");
   });
 
+  it("turns figure markers into figure blocks on their own lines, outside code only", () => {
+    const out = prepareAnswer("The layers stack up [1]. [[figure:3]] Next part.");
+    expect(out).toContain("\n\n```figure\n3\n```\n\n");
+    expect(out).toContain("[1](#cite-1)");
+    expect(prepareAnswer("```\n[[figure:3]]\n```")).toBe("```\n[[figure:3]]\n```");
+    expect(hasVisual("See this:\n\n[[figure:2]]")).toBe(true);
+    expect(stripCitations("Intro [1].\n\n[[figure:2]]\n\nEnd.")).toBe("Intro .\n\nEnd.");
+  });
+
   it("strips citations for copying and detects visuals", () => {
     expect(stripCitations("Fact [1]. More 【2†src】")).toBe("Fact . More");
     expect(hasVisual("text\n```mermaid\nflowchart LR\n```")).toBe(true);

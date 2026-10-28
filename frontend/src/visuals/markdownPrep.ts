@@ -46,19 +46,29 @@ export function prepareCitations(text: string): string {
   return out.replace(CITES_BEFORE_PUNCTUATION_RE, "$2 $1");
 }
 
-export function prepareAnswer(markdown: string): string {
-  return mapOutsideCode(markdown, (text) => prepareCitations(normalizeMath(text)));
+// The model shows a figure from the documents as [[figure:N]], N being its source number.
+export const FIGURE_REF_RE = /\[\[\s*figure\s*:\s*(\d{1,2})\s*\]\]/gi;
+
+/** Turn figure markers into ```figure blocks (on their own lines), rendered as the image. */
+export function prepareFigures(text: string): string {
+  return text.replace(FIGURE_REF_RE, (_, n: string) => "\n\n```figure\n" + n + "\n```\n\n");
 }
 
-/** Plain text for the Copy button: citation markers removed (outside code only). */
+export function prepareAnswer(markdown: string): string {
+  return mapOutsideCode(markdown, (text) => prepareCitations(normalizeMath(prepareFigures(text))));
+}
+
+/** Plain text for the Copy button: citation and figure markers removed (outside code only). */
 export function stripCitations(markdown: string): string {
-  return mapOutsideCode(markdown, (text) => text.replace(CITATION_RE, "")).trim();
+  return mapOutsideCode(markdown, (text) => text.replace(FIGURE_REF_RE, "").replace(CITATION_RE, ""))
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /** Language of a fenced block the renderer handles as a visual, if any. */
-export const VISUAL_LANGUAGES = ["mermaid", "chart"] as const;
+export const VISUAL_LANGUAGES = ["mermaid", "chart", "figure"] as const;
 export type VisualLanguage = (typeof VISUAL_LANGUAGES)[number];
 
 export function hasVisual(markdown: string): boolean {
-  return /(^|\n)(```|~~~)\s*(mermaid|chart)\b/.test(markdown);
+  return /(^|\n)(```|~~~)\s*(mermaid|chart)\b/.test(markdown) || new RegExp(FIGURE_REF_RE.source, "i").test(markdown);
 }

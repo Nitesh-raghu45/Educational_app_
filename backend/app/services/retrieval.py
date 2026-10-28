@@ -9,8 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..models import Document, DocumentChunk
+from ..models import Document, DocumentChunk, DocumentFigure
 from . import providers
+from .figures import FIGURE_CHUNK_BASE
 from .keyword import keyword_search
 
 
@@ -25,9 +26,12 @@ class Evidence:
     score: float
     # "vector", "keyword" or "both": which search found this chunk.
     matched_by: str = "vector"
+    # Set when this chunk describes a figure: {"id", "title", "width", "height"}.
+    figure: dict[str, Any] | None = None
 
     def citation(self, index: int | None = None) -> dict[str, Any]:
         snippet = " ".join(self.text.split())
+        extra = {"figure": self.figure} if self.figure else {}
         return {
             "index": index,
             "chunk_id": self.chunk_id,
@@ -37,6 +41,7 @@ class Evidence:
             "snippet": snippet if len(snippet) <= 280 else snippet[:277] + "...",
             "score": round(self.score, 3),
             "matched_by": self.matched_by,
+            **extra,
         }
 
 
@@ -54,7 +59,8 @@ def format_sources(evidence: list[Evidence]) -> str:
     for i, e in enumerate(evidence, 1):
         name = _defuse(e.filename).replace('"', "'").replace(">", "›")
         page = f' page="{e.page}"' if e.page else ""
-        blocks.append(f'<source id="{i}" file="{name}"{page}>\n{_defuse(e.text)}\n</source>')
+        kind = ' kind="figure"' if e.figure else ""
+        blocks.append(f'<source id="{i}" file="{name}"{page}{kind}>\n{_defuse(e.text)}\n</source>')
     return "\n\n".join(blocks)
 
 
@@ -144,7 +150,19 @@ async def retrieve(
                     dense_scores.get(chunk_id, 0.0), matched_by,
                 )
             )
+    await attach_figures(session, evidence)
     return evidence
+
+
+async def attach_figures(session: AsyncSession, evidence: list[Evidence]) -> None:
+    """Mark the evidence that describes a figure, so the answer can show the image."""
+    ids = [e.chunk_id for e in evidence if "-fig-" in e.chunk_id]
+    if not ids:
+        return
+    figures = {f.chunk_id: f for f in await session.scalars(select(DocumentFigure).where(DocumentFigure.chunk_id.in_(ids)))}
+    for e in evidence:
+        if (f := figures.get(e.chunk_id)) is not None:
+            e.figure = {"id": str(f.id), "title": f.title, "width": f.width, "height": f.height}
 
 
 async def leading_chunks(
@@ -185,7 +203,11 @@ async def sample_chunks(
         await session.scalars(
             select(DocumentChunk.id)
             .join(Document, Document.id == DocumentChunk.document_id)
-            .where(Document.user_id == user_id, Document.id.in_(document_ids))
+            .where(
+                Document.user_id == user_id,
+                Document.id.in_(document_ids),
+                DocumentChunk.chunk_index < FIGURE_CHUNK_BASE,  # quizzes come from the text
+            )
         )
     )
     chosen = random.sample(ids, min(count, len(ids)))

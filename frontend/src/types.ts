@@ -22,6 +22,8 @@ export interface Citation {
   page: number | null;
   snippet: string;
   score: number;
+  /** Present when this source is a figure from the document, shown as an image. */
+  figure?: { id: string; title: string; width: number; height: number };
 }
 
 export interface Message {
@@ -43,6 +45,8 @@ export interface DocumentInfo {
   error: string | null;
   chunk_count: number;
   created_at: string;
+  figure_status: "processing" | "done" | "failed" | null;
+  figure_count: number;
 }
 
 export interface Quiz {

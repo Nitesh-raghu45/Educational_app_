@@ -16,7 +16,7 @@ from sqlalchemy import delete, select
 from ..config import get_settings
 from ..db import SessionLocal
 from ..models import Document, DocumentChunk, DocumentEmbedding, utcnow
-from . import providers
+from . import figures, providers
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,8 @@ async def ingest_document(document_id: uuid.UUID) -> None:
                     "try a sharper, well-lit image."
                 )
 
-            # Re-ingestion: drop previous vectors and rows first.
+            # Re-ingestion: drop previous figures, vectors and rows first.
+            await figures.clear_figures(session, doc)
             old_ids = list(await session.scalars(select(DocumentChunk.id).where(DocumentChunk.document_id == doc.id)))
             if old_ids:
                 await asyncio.to_thread(providers.vector_store().delete, namespace, old_ids)
@@ -258,6 +259,7 @@ async def ingest_document(document_id: uuid.UUID) -> None:
             timer.lap("pinecone")
             session.add_all(rows)
             await _record_embedding_model(session, doc.id, settings.embedding_model)
+            await figures.mark_processing(session, doc.id)
             doc.status, doc.chunk_count, doc.updated_at = "ready", len(rows), utcnow()
             await session.commit()
             timer.lap("database")
@@ -270,6 +272,9 @@ async def ingest_document(document_id: uuid.UUID) -> None:
                 message = str(exc) if isinstance(exc, IngestionError) else "Processing failed. Try uploading again."
                 doc.status, doc.error, doc.updated_at = "failed", message, utcnow()
                 await session.commit()
+            return
+    # The text is ready and answerable now; figures are added afterwards.
+    await figures.process_document(document_id)
 
 
 async def _record_embedding_model(session, document_id: uuid.UUID, model: str) -> None:

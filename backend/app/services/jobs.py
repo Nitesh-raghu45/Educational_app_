@@ -64,6 +64,18 @@ async def _reembed_inline(document_id: uuid.UUID) -> None:
         await reembed_document(document_id)
 
 
+async def _figures_inline(document_id: uuid.UUID) -> None:
+    from .figures import process_document
+
+    async with _inline_ingestion_slot():
+        await process_document(document_id)
+
+
+def enqueue_figures(document_id: uuid.UUID) -> None:
+    """Find figures in an already-ready document, sharing the one-at-a-time slot with uploads."""
+    spawn(_figures_inline(document_id))
+
+
 def enqueue_reembed(document_id: uuid.UUID) -> None:
     """Re-embed with the current model, sharing the one-at-a-time slot with new uploads."""
     spawn(_reembed_inline(document_id))

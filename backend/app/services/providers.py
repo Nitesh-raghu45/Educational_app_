@@ -26,9 +26,14 @@ class LLM(Protocol):
     async def complete(self, messages: list[dict[str, str]], model: str, **kwargs: Any) -> str: ...
 
 
+class Vision(Protocol):
+    async def describe(self, image_jpeg: bytes, prompt: str) -> str: ...
+
+
 _embedder: Embedder | None = None
 _store: VectorStore | None = None
 _llm: LLM | None = None
+_vision: Vision | None = None
 
 
 def embedder() -> Embedder:
@@ -59,9 +64,24 @@ def llm() -> LLM:
     return _llm
 
 
-def override(*, embedder: Embedder | None = None, store: VectorStore | None = None, llm: LLM | None = None) -> None:
-    global _embedder, _store, _llm
-    _embedder, _store, _llm = embedder, store, llm
+def vision() -> Vision:
+    global _vision
+    if _vision is None:
+        from .llm import GroqVision
+
+        _vision = GroqVision(get_settings())
+    return _vision
+
+
+def override(
+    *,
+    embedder: Embedder | None = None,
+    store: VectorStore | None = None,
+    llm: LLM | None = None,
+    vision: Vision | None = None,
+) -> None:
+    global _embedder, _store, _llm, _vision
+    _embedder, _store, _llm, _vision = embedder, store, llm, vision
 
 
 # Vectors made by this model live in the original namespace names, so they stay usable if the

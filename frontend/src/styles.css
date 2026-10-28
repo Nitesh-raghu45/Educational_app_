@@ -400,6 +400,24 @@ input, textarea {
 }
 .visual.diagram.expanded .diagram-svg svg { max-width: none; width: min(1400px, 100%); }
 
+/* Figures from the student's documents */
+.doc-figure { padding: 12px; }
+.figure-frame {
+  max-width: 100%; max-height: 480px; margin: 0 auto; display: flex; align-items: center; justify-content: center;
+  border-radius: 8px; overflow: hidden; background: #fff; /* figures are usually drawn on white paper */
+}
+.figure-frame img { width: 100%; height: 100%; object-fit: contain; cursor: zoom-in; display: block; }
+.figure-frame .visual-loading { background: var(--bg-soft); width: 100%; height: 100%; justify-content: center; padding: 12px; text-align: center; }
+.doc-figure figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 8px; font-size: 13px; }
+.figure-title { font-weight: 600; }
+.figure-source { color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.visual.doc-figure.expanded {
+  position: fixed; inset: 16px; z-index: 60; margin: 0; overflow: auto; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; justify-content: center;
+}
+.visual.doc-figure.expanded .figure-frame { max-height: calc(100vh - 110px); width: auto; height: calc(100vh - 110px); }
+.visual.doc-figure.expanded .figure-frame img { cursor: default; }
+
 .chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
 .chart-grid { stroke: var(--border); stroke-width: 1; }
 .chart-axis { stroke: var(--muted); stroke-width: 1.2; }

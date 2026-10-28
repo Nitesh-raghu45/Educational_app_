@@ -63,3 +63,37 @@ class GroqLLM:
             **extra,
         )
         return response.choices[0].message.content or ""
+
+
+class GroqVision:
+    """Describes figure images with a Groq vision model, for search and for the answer model."""
+
+    def __init__(self, settings: Settings):
+        self._settings = settings
+        self._client = None
+
+    async def describe(self, image_jpeg: bytes, prompt: str) -> str:
+        import base64
+
+        if self._client is None:
+            if not self._settings.groq_api_key:
+                raise RuntimeError("GROQ_API_KEY is not set")
+            from groq import AsyncGroq
+
+            self._client = AsyncGroq(api_key=self._settings.groq_api_key)
+        url = "data:image/jpeg;base64," + base64.b64encode(image_jpeg).decode()
+        response = await self._client.chat.completions.create(
+            model=self._settings.groq_vision_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": url}}],
+                }
+            ],
+            temperature=0.1,
+            max_completion_tokens=700,
+            response_format={"type": "json_object"},
+            # Describing what is visible needs no long thinking; this keeps captions ~1-2 s.
+            reasoning_effort="none",
+        )
+        return response.choices[0].message.content or ""

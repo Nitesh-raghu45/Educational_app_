@@ -1,17 +1,18 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from .api import auth, documents, quizzes, sections
+from .api import auth, documents, figures, quizzes, sections
 from .config import get_settings
 from .db import SessionLocal, create_tables, engine
 from .errors import AppError
-from .models import Document, DocumentEmbedding
+from .models import Document, DocumentEmbedding, FigureScan
 from .ratelimit import get_redis
 from .services import jobs, providers
 
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
     jobs.spawn(warm_up())
     jobs.spawn(resume_unfinished_ingestion())
     jobs.spawn(reembed_outdated_documents())
+    jobs.spawn(backfill_figures())
     yield
     await engine.dispose()
 
@@ -77,6 +79,34 @@ async def reembed_outdated_documents() -> None:
             logger.info("Re-embedding %d document(s) with %s in the background", len(ids), model)
     except Exception:
         logger.warning("Could not check documents for re-embedding", exc_info=True)
+
+
+async def backfill_figures() -> None:
+    """Documents uploaded before figure extraction existed (or left mid-way by a restart) get
+    their figures now, if the uploaded file is still on disk."""
+    if not get_settings().figures_enabled:
+        return
+    try:
+        async with SessionLocal() as session:
+            docs = (
+                await session.execute(
+                    select(Document.id, Document.storage_path, FigureScan.status)
+                    .outerjoin(FigureScan, FigureScan.document_id == Document.id)
+                    .where(Document.status == "ready")
+                )
+            ).all()
+        # Never scanned and the file is here, or interrupted mid-way (the job marks it failed
+        # if the file is gone, so the app stops waiting for it).
+        ids = [
+            doc_id for doc_id, path, scan in docs
+            if scan == "processing" or (scan is None and Path(path).exists())
+        ]
+        for document_id in ids:
+            jobs.enqueue_figures(document_id)
+        if ids:
+            logger.info("Looking for figures in %d earlier document(s) in the background", len(ids))
+    except Exception:
+        logger.warning("Could not check documents for figures", exc_info=True)
 
 
 async def resume_unfinished_ingestion() -> None:
@@ -153,7 +183,7 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=exc.to_body())
 
 
-for router in (auth.router, auth.usage_router, sections.router, documents.router, quizzes.router):
+for router in (auth.router, auth.usage_router, sections.router, documents.router, figures.router, quizzes.router):
     app.include_router(router, prefix="/api/v1")
 
 

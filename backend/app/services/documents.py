@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import storage
 from ..config import get_settings
 from ..errors import AppError
-from ..models import Document, DocumentChunk, SectionDocument
-from . import providers, usage
+from ..models import Document, DocumentChunk, FigureScan, SectionDocument
+from . import figures, providers, usage
 from .sections import get_owned_section
 
 CONTENT_TYPES = {
@@ -62,11 +62,19 @@ async def save_upload(
     return doc
 
 
+async def with_figure_counts(session: AsyncSession, docs: list[Document]) -> list[Document]:
+    """Adds `figure_status` and `figure_count` (read by DocumentOut) to each document."""
+    counts = await figures.figure_counts(session, [d.id for d in docs])
+    for doc in docs:
+        doc.figure_status, doc.figure_count = counts.get(doc.id, (None, 0))
+    return docs
+
+
 async def list_documents(session: AsyncSession, user_id: uuid.UUID) -> list[Document]:
     rows = await session.scalars(
         select(Document).where(Document.user_id == user_id).order_by(Document.created_at.desc())
     )
-    return list(rows)
+    return await with_figure_counts(session, list(rows))
 
 
 async def section_documents(session: AsyncSession, section_id: uuid.UUID, user_id: uuid.UUID) -> list[Document]:
@@ -77,7 +85,7 @@ async def section_documents(session: AsyncSession, section_id: uuid.UUID, user_i
         .where(SectionDocument.section_id == section_id)
         .order_by(SectionDocument.created_at)
     )
-    return list(rows)
+    return await with_figure_counts(session, list(rows))
 
 
 async def attach(session: AsyncSession, section_id: uuid.UUID, document_id: uuid.UUID, user_id: uuid.UUID) -> Document:
@@ -86,7 +94,7 @@ async def attach(session: AsyncSession, section_id: uuid.UUID, document_id: uuid
     if await session.get(SectionDocument, (section_id, document_id)) is None:
         session.add(SectionDocument(section_id=section_id, document_id=document_id))
         await session.commit()
-    return doc
+    return (await with_figure_counts(session, [doc]))[0]
 
 
 async def detach(session: AsyncSession, section_id: uuid.UUID, document_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -101,11 +109,13 @@ async def detach(session: AsyncSession, section_id: uuid.UUID, document_id: uuid
 
 async def delete_document(session: AsyncSession, document_id: uuid.UUID, user_id: uuid.UUID) -> None:
     doc = await get_owned_document(session, document_id, user_id)
+    await figures.clear_figures(session, doc)
     chunk_ids = list(await session.scalars(select(DocumentChunk.id).where(DocumentChunk.document_id == doc.id)))
     if chunk_ids:
         await asyncio.to_thread(providers.vector_store().delete, providers.namespace_for(user_id), chunk_ids)
     await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc.id))
     await session.execute(delete(SectionDocument).where(SectionDocument.document_id == doc.id))
+    await session.execute(delete(FigureScan).where(FigureScan.document_id == doc.id))
     await session.execute(delete(Document).where(Document.id == doc.id))
     await session.commit()
     storage.delete(doc.storage_path)
