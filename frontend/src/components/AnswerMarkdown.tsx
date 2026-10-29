@@ -1,4 +1,4 @@
-import { isValidElement, lazy, ReactNode, Suspense, useState } from "react";
+import { isValidElement, lazy, memo, ReactNode, Suspense, useMemo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -108,10 +108,28 @@ interface Props {
   streaming?: boolean;
 }
 
-export default function AnswerMarkdown({ content, citations, streaming = false }: Props) {
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex];
+
+/** Memoized: typing in the message box re-renders the chat, and re-rendering every answer would
+ * re-parse all of them on each keystroke. */
+export default memo(function AnswerMarkdown({ content, citations, streaming = false }: Props) {
+  // The renderers must stay the same functions between renders: react-markdown uses them as
+  // component types, so new ones would rebuild every diagram, chart and picture (which briefly
+  // change height and make the whole chat jump).
+  const components = useMemo(() => renderers(citations, streaming), [citations, streaming]);
+  const markdown = useMemo(() => prepareAnswer(content), [content]);
+  return (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
+      {markdown}
+    </ReactMarkdown>
+  );
+});
+
+function renderers(citations: Citation[] | null, streaming: boolean): Components {
   const byIndex = new Map((citations ?? []).filter((c) => !c.web_image).map((c) => [String(c.index), c]));
   const webImages = new Map((citations ?? []).flatMap((c) => (c.web_image ? [[String(c.web_image.n), c.web_image]] : [])));
-  const components: Components = {
+  return {
     a({ href, children }) {
       if (href?.startsWith(CITE_LINK)) {
         const n = href.slice(CITE_LINK.length);
@@ -157,9 +175,4 @@ export default function AnswerMarkdown({ content, citations, streaming = false }
       return <CodeBlock>{children}</CodeBlock>;
     },
   };
-  return (
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>
-      {prepareAnswer(content)}
-    </ReactMarkdown>
-  );
 }
