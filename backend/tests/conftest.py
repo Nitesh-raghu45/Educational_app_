@@ -16,6 +16,8 @@ os.environ.update(
     GROQ_API_KEY="",
     PINECONE_API_KEY="",
     RETRIEVAL_MIN_SCORE="0.1",
+    # Tests never search the internet; test_web_images.py turns this on with a fake search.
+    WEB_IMAGES_ENABLED="false",
 )
 
 import httpx  # noqa: E402

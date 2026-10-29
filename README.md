@@ -132,6 +132,23 @@ Figures never block a document: questions work as soon as the text is ready, and
 leaves the document fully usable. Earlier uploads get their figures in the background at startup if
 their file is still on disk.
 
+### Pictures from the web ([services/web_images.py](backend/app/services/web_images.py))
+Answers can include pictures from the internet, as illustrations only (never as evidence):
+- **When:** if the student asks for a picture ("show me an image of…", "photo dikhao"), or the topic is
+  something physical where a picture usually helps (organs, cells, machines, maps, animals…). Abstract
+  questions trigger no search. Figures from the student's own documents always win over web pictures.
+- **Where from:** lead images of the best-matching Wikipedia articles (free, openly licensed, no key).
+  With `SERPER_API_KEY`, also Google Images via [Serper.dev](https://serper.dev), used only when the
+  student asks for a picture (Google's own Custom Search API is closed to new users).
+- **No added latency:** the search starts as soon as the question arrives and runs alongside history
+  loading and document search, over a kept-open connection. If it isn't back within
+  `WEB_IMAGE_TIMEOUT` (0.8 s) the answer goes ahead without it, and the late result fills the cache
+  (Redis, 24 h) for next time.
+- **Answer:** found pictures are listed for the model by title; it shows one by writing `[[web:N]]`
+  after the text it illustrates. The app shows it with "From the web · site" linking to the original
+  page (on Wikipedia, the file page with author and licence). Images load straight from their site with
+  `referrerPolicy="no-referrer"`, and a broken one is simply hidden.
+
 ### Streaming (SSE)
 `POST /api/v1/sections/{id}/messages` returns `text/event-stream` with these events:
 `message_start` (saved message IDs and the updated quota) → `token`… → `citations` → `done`, or `error`.

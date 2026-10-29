@@ -37,6 +37,14 @@ describe("markdown preparation", () => {
     expect(stripCitations("Intro [1].\n\n[[figure:2]]\n\nEnd.")).toBe("Intro .\n\nEnd.");
   });
 
+  it("turns web picture markers into webimage blocks, kept apart from citations", () => {
+    const out = prepareAnswer("The heart pumps blood [1].\n[[web:2]]\nMore.");
+    expect(out).toContain("\n\n```webimage\n2\n```\n\n");
+    expect(out).toContain("[1](#cite-1)");
+    expect(hasVisual("Look:\n\n[[web:1]]")).toBe(true);
+    expect(stripCitations("Heart [1].\n\n[[web:1]]\n\nEnd.")).toBe("Heart .\n\nEnd.");
+  });
+
   it("strips citations for copying and detects visuals", () => {
     expect(stripCitations("Fact [1]. More 【2†src】")).toBe("Fact . More");
     expect(hasVisual("text\n```mermaid\nflowchart LR\n```")).toBe(true);

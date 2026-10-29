@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     r2_access_key_id: str = ""
     r2_secret_access_key: str = ""
     r2_bucket: str = ""
+    # Pictures from the web in answers: Wikipedia images (free) and, with a Serper.dev key,
+    # Google Images (used only when the student asks for a picture). The search runs alongside
+    # document retrieval and is dropped if it takes longer than web_image_timeout seconds.
+    web_images_enabled: bool = True
+    serper_api_key: str = ""
+    web_image_timeout: float = 0.8
+    web_image_cache_seconds: int = 60 * 60 * 24
     history_window: int = 8
     summary_min_new_messages: int = 4
 

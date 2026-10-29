@@ -24,6 +24,20 @@ export interface Citation {
   score: number;
   /** Present when this source is a figure from the document, shown as an image. */
   figure?: { id: string; title: string; width: number; height: number };
+  /** Present when this entry is a picture from the web shown as [[web:n]]: not a source. */
+  web_image?: WebImage;
+}
+
+export interface WebImage {
+  n: number;
+  title: string;
+  image_url: string;
+  page_url: string;
+  source: string;
+  provider: "wikipedia" | "google";
+  description: string;
+  width: number | null;
+  height: number | null;
 }
 
 export interface Message {

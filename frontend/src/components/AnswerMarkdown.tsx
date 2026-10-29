@@ -7,6 +7,7 @@ import type { Citation } from "../types";
 import { CITE_LINK, prepareAnswer } from "../visuals/markdownPrep";
 import ChartBlock from "./ChartBlock";
 import FigureBlock from "./FigureBlock";
+import WebImageBlock from "./WebImageBlock";
 
 // The diagram renderer pulls in Mermaid, so it is only downloaded when a diagram appears.
 const MermaidBlock = lazy(() => import("./MermaidBlock"));
@@ -89,7 +90,13 @@ function VisualPlaceholder({ kind }: { kind: string }) {
   return (
     <div className="visual visual-loading">
       <span className="spinner" aria-hidden="true" />{" "}
-      {kind === "chart" ? "Preparing chart…" : kind === "figure" ? "Loading figure…" : "Drawing diagram…"}
+      {kind === "chart"
+        ? "Preparing chart…"
+        : kind === "figure"
+          ? "Loading figure…"
+          : kind === "webimage"
+            ? "Loading picture…"
+            : "Drawing diagram…"}
     </div>
   );
 }
@@ -102,7 +109,8 @@ interface Props {
 }
 
 export default function AnswerMarkdown({ content, citations, streaming = false }: Props) {
-  const byIndex = new Map((citations ?? []).map((c) => [String(c.index), c]));
+  const byIndex = new Map((citations ?? []).filter((c) => !c.web_image).map((c) => [String(c.index), c]));
+  const webImages = new Map((citations ?? []).flatMap((c) => (c.web_image ? [[String(c.web_image.n), c.web_image]] : [])));
   const components: Components = {
     a({ href, children }) {
       if (href?.startsWith(CITE_LINK)) {
@@ -129,6 +137,12 @@ export default function AnswerMarkdown({ content, citations, streaming = false }
         const citation = byIndex.get(text.trim());
         if (citation?.figure) return <FigureBlock citation={citation} />;
         return streaming ? <VisualPlaceholder kind="figure" /> : null;
+      }
+      if (language === "webimage") {
+        // Like figures, the picture's address arrives with the citations after the text.
+        const image = webImages.get(text.trim());
+        if (image) return <WebImageBlock image={image} />;
+        return streaming ? <VisualPlaceholder kind="webimage" /> : null;
       }
       if (language === "mermaid" || language === "chart") {
         if (streaming) return <VisualPlaceholder kind={language} />;

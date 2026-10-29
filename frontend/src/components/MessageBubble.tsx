@@ -41,7 +41,8 @@ export default function MessageBubble({ message, onRetry, onVisualize }: Props) 
 
   const streaming = message.status === "pending" || message.status === "streaming";
   const waiting = streaming && !message.content;
-  const citations = message.citations ?? [];
+  // Web pictures travel with the citations but are illustrations, not sources.
+  const citations = (message.citations ?? []).filter((c) => !c.web_image);
   const open = citations.find((c) => c.chunk_id === openSource);
 
   return (

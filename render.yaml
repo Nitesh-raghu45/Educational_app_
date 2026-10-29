@@ -34,6 +34,9 @@ services:
         sync: false
       - key: R2_BUCKET
         sync: false
+      # Optional: Google Images results via Serper.dev (Wikipedia pictures work without it).
+      - key: SERPER_API_KEY
+        sync: false
       - key: DATABASE_SSL
         value: "true"
       - key: JWT_SECRET
