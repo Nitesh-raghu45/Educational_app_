@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { api, describeError } from "../api";
 import type { Attempt, Quiz } from "../types";
+import { CloseIcon } from "./icons";
 
 export default function QuizPanel({ sectionId, onClose }: { sectionId: string; onClose: () => void }) {
   const [count, setCount] = useState(5);
@@ -45,7 +46,7 @@ export default function QuizPanel({ sectionId, onClose }: { sectionId: string; o
         <div className="panel-header">
           <h3>{attempt ? `Score: ${attempt.score} / ${attempt.total}` : "Quiz from your documents"}</h3>
           <button className="icon" onClick={onClose} aria-label="Close quiz">
-            ×
+            <CloseIcon />
           </button>
         </div>
 

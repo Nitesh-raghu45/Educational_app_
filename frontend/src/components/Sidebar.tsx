@@ -1,4 +1,5 @@
 import type { Section, Usage, User } from "../types";
+import { PlusIcon } from "./icons";
 
 const USAGE_ROWS: { kind: keyof Usage["limits"]; label: string }[] = [
   { kind: "question", label: "Questions" },
@@ -47,7 +48,7 @@ export default function Sidebar({ sections, activeId, user, usage, onSelect, onN
   return (
     <aside className="sidebar">
       <button className="new-chat" onClick={onNewChat}>
-        <span>＋</span> New chat
+        <PlusIcon /> New chat
       </button>
       <div className="sidebar-label">Chats</div>
       <nav className="section-list">

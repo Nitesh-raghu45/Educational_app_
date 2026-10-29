@@ -3,6 +3,7 @@ import { api, describeError, getToken, setToken, setUnauthorizedHandler } from "
 import AuthScreen from "./components/AuthScreen";
 import ChatView from "./components/ChatView";
 import Sidebar from "./components/Sidebar";
+import { MenuIcon } from "./components/icons";
 import type { Section, Usage, User } from "./types";
 
 export default function App() {
@@ -22,6 +23,14 @@ export default function App() {
   }, []);
 
   useEffect(() => setUnauthorizedHandler(logout), [logout]);
+
+  // Esc closes the sidebar drawer on small screens.
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSidebarOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
 
   useEffect(() => {
     if (!getToken()) return;
@@ -105,7 +114,7 @@ export default function App() {
       <div className="scrim" onClick={() => setSidebarOpen(false)} />
       <main className="main">
         <button className="menu-button" aria-label="Open sidebar" onClick={() => setSidebarOpen(true)}>
-          ☰
+          <MenuIcon />
         </button>
         {notice && (
           <div className="notice" role="alert">

@@ -1,6 +1,7 @@
 import { ChangeEvent, Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
 import { api, describeError } from "../api";
 import type { DocumentInfo } from "../types";
+import { CloseIcon } from "./icons";
 
 interface Props {
   sectionId: string;
@@ -73,7 +74,7 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
       <div className="panel-header">
         <h3>Documents in this chat</h3>
         <button className="icon" onClick={onClose} aria-label="Close documents">
-          ×
+          <CloseIcon />
         </button>
       </div>
       <p className="small muted">Answers and quizzes use only these files.</p>

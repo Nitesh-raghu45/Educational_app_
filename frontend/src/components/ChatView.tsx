@@ -4,6 +4,10 @@ import type { DocumentInfo, Message, Section, StartEvent } from "../types";
 import DocumentsPanel from "./DocumentsPanel";
 import MessageBubble from "./MessageBubble";
 import QuizPanel from "./QuizPanel";
+import { DocumentIcon, QuizIcon, SendIcon } from "./icons";
+
+// Phones and tablets: an on-screen keyboard, where Enter should add a line, not send.
+const touchKeyboard = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
 
 interface Props {
   sectionId: string;
@@ -29,7 +33,11 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
   const [showDocs, setShowDocs] = useState(false);
   const [showQuiz, setShowQuiz] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Follow a streaming answer only while the reader is at the bottom, so scrolling up to
+  // reread something isn't interrupted by every new token.
+  const followRef = useRef(true);
 
   const updateSection = useCallback(
     (s: Section) => {
@@ -71,9 +79,25 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
     return () => clearTimeout(timer);
   }, [messages, sending, reloadMessages]);
 
+  // Scroll the message list itself (scrollIntoView can also move the page on phones, e.g.
+  // while the keyboard is open).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const list = messagesRef.current;
+    if (list && followRef.current) list.scrollTop = list.scrollHeight;
   }, [messages]);
+
+  function onMessagesScroll() {
+    const list = messagesRef.current;
+    if (list) followRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 120;
+  }
+
+  // Grow the message box with its text (CSS field-sizing isn't supported by Safari/Firefox).
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+  }, [draft]);
 
   async function runStream(path: string, body: unknown, placeholder: { userId?: string; assistantId: string }) {
     let assistantId = placeholder.assistantId;
@@ -144,6 +168,7 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
     const userId = `tmp-u-${clientId}`;
     const assistantId = `tmp-a-${clientId}`;
     if (text === undefined) setDraft("");
+    followRef.current = true; // jump to your own question
     setMessages((ms) => [
       ...ms,
       { id: userId, role: "user", content, citations: null, status: "completed", reply_to_id: null, created_at: now },
@@ -158,7 +183,8 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // On phones Enter adds a new line (like ChatGPT); the send button sends.
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !touchKeyboard) {
       e.preventDefault();
       send();
     }
@@ -178,17 +204,30 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
           <span className={`quota ${limitReached ? "full" : section.remaining <= 5 ? "low" : ""}`}>
             {section.question_count} / {section.max_questions} questions
           </span>
-          <button className="secondary" onClick={() => setShowDocs((v) => !v)}>
-            Documents ({docs.length})
+          <button
+            className="secondary header-button"
+            onClick={() => setShowDocs((v) => !v)}
+            aria-label={`Documents (${docs.length})`}
+            aria-expanded={showDocs}
+          >
+            <DocumentIcon />
+            <span className="button-label">Documents</span>
+            <span className="badge">{docs.length}</span>
           </button>
-          <button className="secondary" onClick={() => setShowQuiz(true)} disabled={!hasReadyDoc}>
-            Quiz me
+          <button
+            className="secondary header-button"
+            onClick={() => setShowQuiz(true)}
+            disabled={!hasReadyDoc}
+            aria-label="Quiz me"
+          >
+            <QuizIcon />
+            <span className="button-label">Quiz me</span>
           </button>
         </div>
       </header>
 
       <div className="chat-body">
-        <div className="messages">
+        <div className="messages" ref={messagesRef} onScroll={onMessagesScroll}>
           {messages.length === 0 && (
             <div className="empty-state">
               <h1>What do you want to learn?</h1>
@@ -209,7 +248,6 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
               }
             />
           ))}
-          <div ref={bottomRef} />
         </div>
         {showDocs && (
           <DocumentsPanel sectionId={sectionId} docs={docs} onDocsChange={setDocs} onClose={() => setShowDocs(false)} />
@@ -245,6 +283,7 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
         ) : (
           <div className="composer">
             <textarea
+              ref={inputRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
@@ -252,9 +291,10 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
               rows={1}
               maxLength={4000}
               disabled={sending}
+              enterKeyHint={touchKeyboard ? "enter" : "send"}
             />
             <button className="send" onClick={() => send()} disabled={sending || !draft.trim()} aria-label="Send">
-              ↑
+              <SendIcon />
             </button>
           </div>
         )}
