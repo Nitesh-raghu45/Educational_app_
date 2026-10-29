@@ -284,6 +284,9 @@ input, textarea {
 .composer textarea {
   flex: 1; border: none; background: transparent; resize: none; outline: none; padding: 8px 0;
   max-height: 200px; field-sizing: content;
+  /* A whole-pixel line height: with a fractional one (1.55 × 15px = 23.25px) the box is rounded a
+     fraction of a pixel short of its text, so it scrolls and the text jiggles while typing. */
+  line-height: 24px; overflow-y: hidden;
 }
 .send {
   width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--text); color: var(--bg);

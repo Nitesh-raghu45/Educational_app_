@@ -97,6 +97,8 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
     if (!input) return;
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+    // Scroll inside the box only once it is full height; before that it fits its text exactly.
+    input.style.overflowY = input.scrollHeight > 200 ? "auto" : "hidden";
   }, [draft]);
 
   async function runStream(path: string, body: unknown, placeholder: { userId?: string; assistantId: string }) {
