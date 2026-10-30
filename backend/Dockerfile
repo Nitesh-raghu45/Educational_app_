@@ -28,6 +28,11 @@ RUN pip install onnx==1.17.0 \
 
 COPY app ./app
 
+# The model is baked in above, so at run time never ask Hugging Face whether a newer copy exists:
+# that check cost every cold start ~0.7 s and 3 network requests, and depended on huggingface.co
+# being reachable. To switch EMBEDDING_MODEL to one that isn't baked in, set HF_HUB_OFFLINE=0.
+ENV HF_HUB_OFFLINE=1
+
 # The app runs as a non-root user: give it the upload folder and its default ./data location.
 RUN useradd --create-home appuser && mkdir -p /data/uploads /app/data && chown -R appuser /data /models /app/data
 
