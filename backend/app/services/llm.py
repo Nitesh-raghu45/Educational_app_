@@ -17,11 +17,11 @@ class GroqLLM:
             self._client = AsyncGroq(api_key=self._settings.groq_api_key)
         return self._client
 
-    def _reasoning_options(self, model: str) -> dict[str, Any]:
+    def _reasoning_options(self, model: str, effort: str | None = None) -> dict[str, Any]:
         """gpt-oss models think before answering. Keep that out of the reply and bound its effort."""
         if not model.startswith("openai/gpt-oss"):
             return {}
-        effort = (
+        effort = effort or (
             self._settings.groq_answer_reasoning_effort
             if model == self._settings.groq_answer_model
             else self._settings.groq_fast_reasoning_effort
@@ -29,7 +29,13 @@ class GroqLLM:
         return {"reasoning_effort": effort, "include_reasoning": False}
 
     async def stream(
-        self, messages: list[dict[str, str]], model: str, *, temperature: float = 0.2, max_tokens: int = 4096
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 4096,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[str]:
         # max_completion_tokens also covers reasoning tokens, so it is set well above the answer length.
         stream = await self._get_client().chat.completions.create(
@@ -38,7 +44,7 @@ class GroqLLM:
             temperature=temperature,
             max_completion_tokens=max_tokens,
             stream=True,
-            **self._reasoning_options(model),
+            **self._reasoning_options(model, reasoning_effort),
         )
         async for chunk in stream:
             if chunk.choices and (delta := chunk.choices[0].delta.content):

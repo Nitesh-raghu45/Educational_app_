@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     daily_upload_limit: int = 30
     daily_chat_limit: int = 20
     rate_limit_per_minute: int = 20
+    # Signing up and in (0 = no limit). Accounts are free, so without these anyone could script
+    # thousands of accounts and multiply every daily limit, or guess passwords endlessly.
+    signup_limit_per_ip_per_hour: int = 5
+    # App-wide, so it holds even when IPs are faked or rotated. Raise it for a class signing up at once.
+    signup_limit_per_hour: int = 100
+    login_limit_per_ip_per_15min: int = 30
+    login_limit_per_email_per_15min: int = 10
 
     groq_api_key: str = ""
     # llama-3.3-70b-versatile / llama-3.1-8b-instant were retired on Groq's free/dev tiers (16 Aug 2026).
@@ -40,6 +47,9 @@ class Settings(BaseSettings):
     groq_answer_model: str = "openai/gpt-oss-120b"
     groq_fast_model: str = "openai/gpt-oss-20b"
     groq_answer_reasoning_effort: str = "medium"
+    # Plain look-up questions ("what is X?") don't need medium reasoning, which only delays the
+    # first word; questions that compare, explain why/how, solve or ask for visuals keep medium.
+    groq_answer_simple_reasoning_effort: str = "low"
     groq_fast_reasoning_effort: str = "low"
 
     pinecone_api_key: str = ""

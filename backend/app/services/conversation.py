@@ -21,6 +21,24 @@ def _clip(text: str, limit: int = MAX_HISTORY_CHARS) -> str:
     return text if len(text) <= limit else text[:limit] + " …"
 
 
+# Markers in earlier answers point at THAT answer's sources and pictures. Left in, the model
+# copies them into new answers, where the same numbers mean different sources or pictures.
+_MARKER_RE = re.compile(
+    r"\s*(?:\[\[\s*(?:figure|web)\s*:\s*\d{1,2}\s*\]\]|[\[【]\d{1,2}(?:†[^\]】]*)?[\]】])",
+    re.IGNORECASE,
+)
+# Diagram and chart code is long and adds nothing as context; the text around it explains it.
+_VISUAL_BLOCK_RE = re.compile(r"```[ \t]*(mermaid|chart)\b[^\n]*\n[\s\S]*?(?:```|$)", re.IGNORECASE)
+
+
+def _context_text(message: ChatMessage) -> str:
+    """A message as conversation context: answers without stale markers or visual code."""
+    if message.role != "assistant":
+        return message.content
+    text = _VISUAL_BLOCK_RE.sub(lambda m: f"({'diagram' if m.group(1).lower() == 'mermaid' else 'chart'} shown)", message.content)
+    return re.sub(r"\n{3,}", "\n\n", _MARKER_RE.sub("", text)).strip()
+
+
 async def recent_history(
     session: AsyncSession, section_id: uuid.UUID, before: datetime, limit: int
 ) -> list[ChatMessage]:
@@ -38,12 +56,12 @@ async def recent_history(
 
 
 def history_as_chat(history: list[ChatMessage]) -> list[dict[str, str]]:
-    return [{"role": m.role, "content": _clip(m.content)} for m in history]
+    return [{"role": m.role, "content": _clip(_context_text(m))} for m in history]
 
 
 def _transcript(history: list[ChatMessage]) -> str:
     return "\n".join(
-        f"{'Student' if m.role == 'user' else 'Assistant'}: {_clip(m.content, 600)}" for m in history
+        f"{'Student' if m.role == 'user' else 'Assistant'}: {_clip(_context_text(m), 600)}" for m in history
     )
 
 

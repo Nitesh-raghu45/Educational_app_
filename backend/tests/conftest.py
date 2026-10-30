@@ -18,11 +18,14 @@ os.environ.update(
     RETRIEVAL_MIN_SCORE="0.1",
     # Tests never search the internet; test_web_images.py turns this on with a fake search.
     WEB_IMAGES_ENABLED="false",
+    # Some tests ask many questions in a row; test_auth_limits.py covers the limiter itself.
+    RATE_LIMIT_PER_MINUTE="1000",
 )
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 
+from app import ratelimit  # noqa: E402
 from app.db import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services import jobs, providers  # noqa: E402
@@ -113,6 +116,7 @@ async def setup(fake_llm):
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     providers.override(embedder=FakeEmbedder(), store=FakeVectorStore(), llm=fake_llm)
+    ratelimit._local.clear()  # every test starts with fresh sign-up / sign-in counters
     yield
     # Let background generation/ingestion tasks finish before the event loop closes.
     await asyncio.gather(*list(jobs._tasks), return_exceptions=True)

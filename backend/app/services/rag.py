@@ -79,6 +79,28 @@ def is_overview_question(question: str) -> bool:
     return bool(_OVERVIEW_RE.search(question))
 
 
+# Questions that need real thinking: reasoning, comparison, problem solving, or a visual to design.
+_DEEP_RE = re.compile(
+    r"\b(?:why|how\s+(?:does|do|did|is|are|was|were|can|could|would|will)|compare[ds]?|comparison|contrast"
+    r"|differen(?:ce|ces|t|tiate)|differ|versus|vs|relationship|relate[ds]?|analy[sz]e|analysis|evaluate"
+    r"|derive|derivation|prove|proof|solve|calculate|compute|numerical|step[- ]by[- ]step|in\s+detail"
+    r"|pros|cons|advantages?|disadvantages?|critically|process|stages|steps|mechanism|diagram|flowchart"
+    r"|chart|graph|plot|mind\s*map|timeline|visuali[sz]e|kyun|kaise)\b",
+    re.IGNORECASE,
+)
+
+
+def reasoning_effort_for(question: str, query: str) -> str:
+    """Medium reasoning for questions that need it; low (a faster first word) for plain look-ups."""
+    settings = get_settings()
+    deep = (
+        bool(_DEEP_RE.search(question) or _DEEP_RE.search(query))
+        or is_overview_question(question)
+        or len(question.split()) > 30
+    )
+    return settings.groq_answer_reasoning_effort if deep else settings.groq_answer_simple_reasoning_effort
+
+
 # gpt-oss models sometimes cite as 【1】 or 【1†source】 instead of [1]; accept all of them.
 _CITATION_RE = re.compile(r"[\[【](\d{1,2})(?:†[^\]】]*)?[\]】]")
 FIGURE_REF_RE = re.compile(r"\[\[\s*figure\s*:\s*(\d{1,2})\s*\]\]", re.IGNORECASE)
@@ -246,7 +268,8 @@ async def _generate(
     else:
         parts: list[str] = []
         messages = build_messages(ctx.summary, history, evidence, ctx.question, query, images)
-        async for delta in providers.llm().stream(messages, model=settings.groq_answer_model):
+        effort = reasoning_effort_for(ctx.question, query)
+        async for delta in providers.llm().stream(messages, model=settings.groq_answer_model, reasoning_effort=effort):
             parts.append(delta)
             await emit("token", {"text": delta})
         answer = "".join(parts).strip() or NOT_FOUND_ANSWER

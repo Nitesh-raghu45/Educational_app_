@@ -23,6 +23,10 @@ def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode()[:72], password_hash.encode())
 
 
+# Checked against when an email has no account, so a failed sign-in takes as long either way.
+DUMMY_HASH = bcrypt.hashpw(b"no-such-account", bcrypt.gensalt()).decode()
+
+
 def create_access_token(user_id: uuid.UUID) -> str:
     settings = get_settings()
     expires = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
