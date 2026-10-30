@@ -11,6 +11,8 @@ interface Props {
 }
 
 const ACCEPT = ".pdf,.docx,.txt,.md,.png,.jpg,.jpeg";
+// File types whose figures are extracted (text files have none to miss).
+const HAS_PICTURES = /\.(pdf|docx|png|jpe?g)$/i;
 
 interface InFlight {
   key: string;
@@ -28,6 +30,7 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
   const [library, setLibrary] = useState<DocumentInfo[]>([]);
   const [inFlight, setInFlight] = useState<InFlight[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -41,7 +44,16 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
       const doc = await api.uploadDocument(file, sectionId, (progress) =>
         setInFlight((list) => list.map((u) => (u.key === key ? { ...u, progress } : u))),
       );
-      onDocsChange((current) => [...current, doc]);
+      // The same file again: the server reused the existing document instead of a duplicate.
+      if (doc.duplicate === "already_in_chat") {
+        setNotice(`${file.name} is already in this chat.`);
+      } else if (doc.duplicate === "existing") {
+        setNotice(
+          `${file.name} was already in your library, so it was added without processing it again` +
+            (doc.figure_status === "processing" ? ". Its figures are being extracted now." : "."),
+        );
+      }
+      onDocsChange((current) => [...current.filter((d) => d.id !== doc.id), doc]);
     } catch (err) {
       setError(`${file.name}: ${describeError(err, "upload failed")}`);
     } finally {
@@ -53,6 +65,7 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
     setError(null);
+    setNotice(null);
     files.forEach(uploadOne); // in parallel; the server processes them one at a time
   }
 
@@ -85,6 +98,11 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
       </button>
       <div className="small muted">PDF, DOCX, TXT, MD, PNG, JPG · up to 25 MB</div>
       {error && <div className="error">{error}</div>}
+      {notice && (
+        <div className="small muted" role="status">
+          {notice}
+        </div>
+      )}
 
       <ul className="doc-list">
         {docs.length === 0 && inFlight.length === 0 && <li className="muted small">No documents yet.</li>}
@@ -127,6 +145,11 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
                 {d.status === "ready" && d.figure_status === "processing" && (
                   <span className="small muted busy-label">
                     <span className="spinner" aria-hidden="true" /> finding figures…
+                  </span>
+                )}
+                {d.status === "ready" && (d.figure_status === null || d.figure_status === "failed") && HAS_PICTURES.test(d.filename) && (
+                  <span className="small muted" title="Uploaded before figure extraction, or extraction failed">
+                    · figures not extracted: upload again to get them
                   </span>
                 )}
                 {!working && (

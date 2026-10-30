@@ -83,6 +83,9 @@ class DocumentOut(BaseModel):
     # processing | done | failed, or None before figures are looked for.
     figure_status: str | None = None
     figure_count: int = 0
+    # On upload only: "existing" when the same file was already in the student's library (that
+    # document was attached instead), "already_in_chat" when it was already attached.
+    duplicate: str | None = None
 
 
 class AttachDocument(BaseModel):

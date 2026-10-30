@@ -60,11 +60,11 @@ def png_bytes(image: Image.Image) -> bytes:
     return out.getvalue()
 
 
-async def upload_image(client, headers, section_id, monkeypatch, name="water-cycle.png") -> str:
+async def upload_image(client, headers, section_id, monkeypatch, name="water-cycle.png", image=None) -> str:
     monkeypatch.setattr(ingestion, "ocr_image", lambda image: "The water cycle: evaporation, condensation, precipitation.")
     response = await client.post(
         "/api/v1/documents",
-        files={"file": (name, png_bytes(diagram()), "image/png")},
+        files={"file": (name, png_bytes(image or diagram()), "image/png")},
         data={"section_id": section_id},
         headers=headers,
     )
@@ -200,7 +200,8 @@ async def test_useless_images_and_the_daily_limit_add_no_figures(client, vision,
     monkeypatch.setattr(get_settings(), "daily_figure_limit", 1)  # 1 already used above
     vision.reply = FakeVision().reply
     calls = vision.calls
-    await upload_image(client, headers, await new_section(client, headers), monkeypatch, name="again.png")
+    # A different image: the same bytes again would reuse the first document.
+    await upload_image(client, headers, await new_section(client, headers), monkeypatch, name="again.png", image=diagram(seed=9))
     assert vision.calls == calls  # limit reached: the vision model isn't called
     docs = (await client.get("/api/v1/documents", headers=headers)).json()
     assert docs[0]["status"] == "ready" and docs[0]["figure_count"] == 0
@@ -243,3 +244,26 @@ def test_r2_store_uses_the_bucket_correctly():
         assert store.get("missing.webp") is None
         store.delete(["a.webp"])
         stub.assert_no_pending_responses()
+
+
+async def test_figure_kept_by_its_caption_when_description_fails(monkeypatch):
+    """Groq's per-minute limit can make a description fail; a figure the document captions
+    ("Fig: Bluetooth Piconet") is kept under that caption instead of being lost."""
+
+    class BrokenVision:
+        async def describe(self, image_jpeg, prompt):
+            raise RuntimeError("HTTP 429 Too Many Requests")
+
+    async def reserved(user_id):
+        return True
+
+    monkeypatch.setattr(figures, "_reserve_caption", reserved)
+    providers.override(vision=BrokenVision())
+    page_text = "Bluetooth\r\nFig: Bluetooth Piconet\r\n"
+    candidate = figures.Candidate(6, b"webp", b"\xff\xd8jpeg", 400, 300, "f1", page_text)
+    title, description = await figures._describe(candidate, "Module_II.pdf", uuid.uuid4())
+    assert title == "Bluetooth Piconet" and "Bluetooth Piconet" in description
+
+    uncaptioned = figures.Candidate(7, b"webp", b"\xff\xd8jpeg", 400, 300, "f2", "Just a paragraph.")
+    assert await figures._describe(uncaptioned, "Module_II.pdf", uuid.uuid4()) is None
+    assert figures.caption_from_context("Figure 4.1: Food chain")[0] == "Food chain"

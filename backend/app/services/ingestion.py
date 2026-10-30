@@ -94,7 +94,15 @@ def extract_text(path: Path) -> tuple[list[tuple[int | None, str]], int]:
         if len(scanned) > settings.ocr_max_pages:
             logger.warning("%s: %d scanned pages; reading only the first %d", path.name, len(scanned), settings.ocr_max_pages)
             scanned = scanned[: settings.ocr_max_pages]
-        ocr_text = _ocr_pdf_pages(path, scanned, settings.ocr_dpi)
+        try:
+            ocr_text = _ocr_pdf_pages(path, scanned, settings.ocr_dpi)
+        except IngestionError:
+            # OCR unavailable: a scanned document can't be read at all, but one whose other pages
+            # have text (e.g. lecture notes with a few full-page diagrams) is still usable.
+            if len(scanned) == len(pages):
+                raise
+            logger.warning("%s: OCR unavailable; skipping %d page(s) without a text layer", path.name, len(scanned))
+            return pages, 0
         return [(n, ocr_text.get(n, text)) for n, text in pages], len(scanned)
     if ext == ".docx":
         import docx

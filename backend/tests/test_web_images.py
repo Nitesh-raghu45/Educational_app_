@@ -3,11 +3,15 @@
 import asyncio
 import json
 import time
+import uuid
 
 import httpx
 import pytest
+from sqlalchemy import delete
 
 from app.config import get_settings
+from app.db import SessionLocal
+from app.models import FigureScan
 from app.services import web_images
 from app.services.conversation import needs_rewrite
 from app.services.web_images import WebImage, image_intent, search_query
@@ -94,6 +98,40 @@ async def test_asked_for_pictures_get_longer_to_arrive(search, monkeypatch):
     assert await web_images.collect(web_images.start_search("Show me a photo of a volcano", "")) == [HEART]
     web_images._memory.clear()
     assert await web_images.collect(web_images.start_search("Explain the structure of a volcano", "")) == []
+
+
+def test_bluetooth_chat_cases():
+    # "i said …" is a complaint, not a topic (it found "Edward Said" and "Qaboos bin Said").
+    assert search_query("i said images that are inside my document") == ""
+    harald = WebImage("Harald Bluetooth", "https://x.org/h.jpg", "https://x.org/h", "wikipedia.org", "wikipedia", "King of Denmark and Norway")
+    assert web_images.is_unrelated_person(harald, "bluetooth")
+    assert not web_images.is_unrelated_person(harald, "harald bluetooth")  # asked about him
+    assert web_images.DOCUMENT_PICTURES_RE.search("ok show me image about bluetooth that are inside  my document")
+    assert not web_images.DOCUMENT_PICTURES_RE.search("show me a picture of bluetooth")
+
+
+async def test_pictures_from_my_document_never_search_the_web(client, fake_llm, search):
+    headers = await register(client)
+    section_id = await new_section(client, headers)
+    doc_id = await upload_ready_doc(client, headers, section_id)
+    write_answer(fake_llm, "Your document has no photosynthesis pictures [1].")
+
+    # Scanned, no figures: say so (the model did) and offer the web, without searching it.
+    events = parse_sse((await ask(client, headers, section_id, "Show me photosynthesis images inside my document")).text)
+    text = "".join(d["text"] for n, d in events if n == "token")
+    assert search.calls == []
+    assert text.endswith('Want pictures of this from the web instead? Ask "find it on the internet".')
+    assert "never extracted" not in text
+
+    # Never scanned (uploaded before figure extraction, file since gone): say to upload it again.
+    async with SessionLocal() as session:
+        await session.execute(delete(FigureScan).where(FigureScan.document_id == uuid.UUID(doc_id)))
+        await session.commit()
+    events = parse_sse((await ask(client, headers, section_id, "Show me photosynthesis images inside my document")).text)
+    text = "".join(d["text"] for n, d in events if n == "token")
+    assert "The pictures in biology.txt were never extracted" in text and "upload it again" in text
+    messages = (await client.get(f"/api/v1/sections/{section_id}/messages", headers=headers)).json()
+    assert "upload it again" in messages[-1]["content"]
 
 
 def test_ranking_prefers_explanatory_pictures():
@@ -200,16 +238,16 @@ async def test_asked_for_pictures_but_model_shows_none(client, fake_llm, search)
     headers = await register(client)
     section_id = await new_section(client, headers)
     await upload_ready_doc(client, headers, section_id)
-    write_answer(fake_llm, "There are no photosynthesis images in your document [1].")
+    write_answer(fake_llm, "Photosynthesis happens in leaves [1].")
 
-    events = parse_sse((await ask(client, headers, section_id, "Show me photosynthesis images from my document")).text)
+    events = parse_sse((await ask(client, headers, section_id, "Show me images of how photosynthesis makes glucose in plants")).text)
     text = "".join(d["text"] for n, d in events if n == "token")
     # Neither title names photosynthesis: nothing is added rather than unrelated pictures.
-    assert text == "There are no photosynthesis images in your document [1]."
+    assert text == "Photosynthesis happens in leaves [1]."
 
     search.images = [WebImage("Photosynthesis diagram", "https://upload.wikimedia.org/p.png", "https://commons.wikimedia.org/wiki/File:P.png", "wikimedia.org", "wikipedia"), HEART]
     web_images._memory.clear()
-    events = parse_sse((await ask(client, headers, section_id, "Show me photosynthesis images from my document")).text)
+    events = parse_sse((await ask(client, headers, section_id, "Show me images of how photosynthesis makes glucose in plants")).text)
     text = "".join(d["text"] for n, d in events if n == "token")
     assert text.endswith("Here is a picture from the web that may help:\n\n[[web:1]]")
     citations = next(d for n, d in events if n == "citations")["citations"]

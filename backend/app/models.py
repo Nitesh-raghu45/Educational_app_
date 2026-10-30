@@ -173,6 +173,21 @@ class FigureScan(Base):
     updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
 
 
+class DocumentHash(Base):
+    """SHA-256 of each uploaded file, so uploading the same file again reuses its document instead
+    of processing a duplicate. A table of its own (not a column on documents): the app creates
+    missing tables at startup but has no migrations to add columns to existing ones."""
+
+    __tablename__ = "document_hashes"
+    __table_args__ = (Index("idx_document_hashes_user_sha", "user_id", "sha256"),)
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"))
+    sha256: Mapped[str] = mapped_column(String(64))
+
+
 class SectionDocument(Base):
     """Which documents a section is allowed to retrieve from."""
 

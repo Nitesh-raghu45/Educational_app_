@@ -107,6 +107,9 @@ _STOPWORDS = {
     "internet", "online", "web", "google", "net", "related", "relevant", "regarding", "inside", "within",
     "document", "documents", "doc", "docs", "file", "files", "notes", "pdf", "uploaded", "using", "use",
     "got", "something", "anything", "topic", "concept", "there", "here", "pe", "se", "par", "aur", "bhi",
+    # Complaints and clarifications: "i said images that are inside my document" (not "Edward Said").
+    "said", "say", "saying", "told", "asked", "ask", "mean", "meant", "want", "wanted", "again", "only",
+    "actually", "already", "not", "no", "yes", "still", "why", "didn't", "don't", "isn't", "wrong",
 }
 
 
@@ -218,6 +221,29 @@ async def _commons(client: httpx.AsyncClient, query: str) -> list[WebImage]:
 
 
 _LOGO_RE = re.compile(r"\b(?:logo|logos|icon|icons|emblem|seal|flag|wordmark|coat of arms|signature)\b", re.IGNORECASE)
+
+
+# Wikipedia descriptions of people ("King of Denmark and Norway"): "Harald Bluetooth" is not a
+# picture of Bluetooth.
+_PERSON_RE = re.compile(
+    r"\b(?:king|queen|emperor|empress|prince|princess|sultan|president|prime minister|politician|actor|actress"
+    r"|singer|musician|footballer|cricketer|writer|author|poet|philosopher|critic|businessman|businesswoman"
+    r"|born|died)\b|\(\s*(?:c\.\s*)?\d{3,4}\s*[–-]",
+    re.IGNORECASE,
+)
+
+
+def is_unrelated_person(image: WebImage, topic: str) -> bool:
+    """A person's portrait that only shares a word with the topic (unless the topic is that person)."""
+    return bool(_PERSON_RE.search(image.description)) and image.title.lower() != topic.lower()
+
+
+# Asking for pictures from the student's own files, not the web: "images inside my document".
+DOCUMENT_PICTURES_RE = re.compile(
+    r"\b(?:in|inside|from|within|of)\s+(?:my|the|this|these|our|uploaded)\s+"
+    r"(?:documents?|docs?|notes?|pdfs?|files?|modules?|chapters?|materials?|slides?|uploads?)\b",
+    re.IGNORECASE,
+)
 
 
 def relevance(image: WebImage, topic: str) -> int:
@@ -437,7 +463,8 @@ def start_search(question: str, query: str) -> PendingSearch | None:
     if not settings.web_images_enabled:
         return None
     intent = image_intent(question) or image_intent(query)
-    if intent is None:
+    if intent is None or DOCUMENT_PICTURES_RE.search(question):
+        # "Images inside my document" asks for the student's own figures, not the web's.
         return None
     topic = topic_for(question, query)
     if not topic:

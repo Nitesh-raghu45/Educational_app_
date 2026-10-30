@@ -127,6 +127,35 @@ def test_missing_tesseract_gives_a_clear_error(monkeypatch):
     ingestion._tesseract_languages.cache_clear()
 
 
+def test_text_pdf_with_picture_pages_survives_missing_ocr(tmp_path, monkeypatch):
+    """Lecture notes with a few full-page diagrams (no text layer): without OCR those pages are
+    skipped instead of failing the whole document. A fully scanned PDF still fails clearly."""
+    import pypdf
+
+    class Page:
+        def __init__(self, text):
+            self.text = text
+
+        def extract_text(self):
+            return self.text
+
+    class Reader:
+        def __init__(self, path):
+            self.pages = [Page("Bluetooth uses a piconet of up to eight devices. " * 3), Page(""), Page("Zigbee is a mesh protocol. " * 4)]
+
+    def no_ocr(path, numbers, dpi):
+        raise IngestionError("Text recognition (Tesseract OCR) is not installed on the server.")
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+    monkeypatch.setattr(ingestion, "_ocr_pdf_pages", no_ocr)
+    pages, ocr_pages = extract_text(tmp_path / "notes.pdf")
+    assert ocr_pages == 0 and [n for n, _ in pages] == [1, 2, 3] and "piconet" in pages[0][1]
+
+    monkeypatch.setattr(pypdf, "PdfReader", lambda path: type("R", (), {"pages": [Page(""), Page("")]})())
+    with pytest.raises(IngestionError, match="not installed"):
+        extract_text(tmp_path / "scan.pdf")
+
+
 def test_only_installed_ocr_languages_are_used(monkeypatch):
     import pytesseract
 

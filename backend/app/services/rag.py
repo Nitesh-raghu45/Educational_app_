@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import SessionLocal
-from ..models import ChatMessage, ChatSection, utcnow
+from ..models import ChatMessage, ChatSection, Document, utcnow
 from . import conversation, providers, web_images
+from .figures import figure_counts
 from .llm import ModelBusy
 from .retrieval import Evidence, format_sources, leading_chunks, retrieve
 from .sections import ready_document_ids
@@ -61,9 +62,7 @@ Real figures from the documents:
 WEB_RULES = """
 Pictures from the web (the WEB IMAGES list after the sources):
 - Each <image id="N"> is a picture found online for this topic, known to you only by its title, site and short description. To show one, write [[web:N]] on its own line directly after the paragraph or list it illustrates; it appears as the picture with its site and a link, so add no caption of your own.
-- Use a web image only when its title clearly matches what that part of the answer explains; at most 2 per answer, each at most once. If the student asked for a picture, image or photo, show the best-matching one.
-- If the student asks for pictures from their documents and the sources have no matching kind="figure", say so in one short sentence, then show the best-matching web images instead (saying they are from the web), rather than stopping there.
-- Web images are illustrations, never evidence: don't cite them, don't take facts from their titles, and keep every fact backed by the numbered sources.
+- Use a web image only when its title clearly matches what that part of the answer explains; at most 2 per answer, each at most once. If the student asked for a picture, image or photo, show the best-matching one.- Web images are illustrations, never evidence: don't cite them, don't take facts from their titles, and keep every fact backed by the numbered sources.
 - A figure from the documents (kind="figure") always wins over a web image of the same thing: never show both for one section. A web image may be shown alongside a Mermaid diagram when they show different things (e.g. a photo of the organ and a flowchart of how it works)."""
 
 NOT_FOUND_ANSWER = (
@@ -151,11 +150,42 @@ def requested_pictures(question: str, query: str, images: list[WebImage], answer
     if WEB_REF_RE.search(answer) or FIGURE_REF_RE.search(answer):
         return ""
     topic = web_images.topic_for(question, query)
-    shown = [n for n, image in enumerate(images, 1) if web_images.relevance(image, topic) > 0][:2]
+    shown = [
+        n for n, image in enumerate(images, 1)
+        if web_images.relevance(image, topic) > 0 and not web_images.is_unrelated_person(image, topic)
+    ][:2]
     if not shown:
         return ""
     note = WEB_PICTURE_NOTE if len(shown) == 1 else WEB_PICTURES_NOTE
     return f"\n\n{note}" + "".join(f"\n\n[[web:{n}]]" for n in shown)
+
+
+WEB_PICTURES_OFFER = 'Want pictures of this from the web instead? Ask "find it on the internet".'
+
+
+async def document_pictures_note(
+    session: AsyncSession, document_ids: list[uuid.UUID], question: str, answer: str
+) -> str:
+    """When the student asked for pictures from their documents and none was shown: say why
+    (e.g. the file was never scanned for figures) and offer web pictures, rather than guessing."""
+    if not web_images.DOCUMENT_PICTURES_RE.search(question) or FIGURE_REF_RE.search(answer):
+        return ""
+    scans = await figure_counts(session, document_ids)
+    # No scan: uploaded before figure extraction existed and the file is gone (hosts like Render
+    # wipe uploads on restart), so it can't be scanned now. Failed: the scan itself failed.
+    missing = [d for d in document_ids if d not in scans or scans[d][0] == "failed"]
+    if missing:
+        names = list(await session.scalars(select(Document.filename).where(Document.id.in_(missing))))
+        listed = ", ".join(names[:3]) + (" and others" if len(names) > 3 else "")
+        reason = (
+            f"The pictures in {listed} were never extracted, so I can't show them. "
+            "Remove the file from this chat and upload it again: its diagrams will then appear in answers."
+        )
+    elif any(status == "processing" for status, _ in scans.values()):
+        reason = "The pictures in your documents are still being extracted; ask again in a minute."
+    else:
+        reason = ""
+    return "\n\n" + " ".join(part for part in (reason, WEB_PICTURES_OFFER) if part)
 
 
 def web_image_citations(answer: str, images: list[WebImage]) -> list[dict[str, Any]]:
@@ -325,6 +355,10 @@ async def _generate(
             answer += extra
             await emit("token", {"text": extra})
         citations = extract_citations(answer, evidence) + web_image_citations(answer, images)
+
+    if note := await document_pictures_note(session, ctx.document_ids, ctx.question, answer):
+        answer += note
+        await emit("token", {"text": note})
 
     await emit("citations", {"citations": citations})
     await session.execute(

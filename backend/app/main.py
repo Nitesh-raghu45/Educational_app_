@@ -14,6 +14,7 @@ from .db import SessionLocal, create_tables, engine
 from .errors import AppError
 from .models import Document, DocumentEmbedding, FigureScan
 from .ratelimit import get_redis
+from .services import documents as document_service
 from .services import jobs, providers, web_images
 
 logging.basicConfig(level=logging.INFO)
@@ -49,6 +50,7 @@ async def lifespan(app: FastAPI):
     jobs.spawn(resume_unfinished_ingestion())
     jobs.spawn(reembed_outdated_documents())
     jobs.spawn(backfill_figures())
+    jobs.spawn(document_service.backfill_hashes())
     jobs.spawn(web_images.warm_up())
     yield
     await engine.dispose()

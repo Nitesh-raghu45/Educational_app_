@@ -60,6 +60,8 @@ export interface DocumentInfo {
   chunk_count: number;
   created_at: string;
   figure_status: "processing" | "done" | "failed" | null;
+  /** Upload responses only: the same file was already in the library / already in this chat. */
+  duplicate?: "existing" | "already_in_chat" | null;
   figure_count: number;
 }
 

@@ -104,7 +104,9 @@ class GroqVision:
                 raise RuntimeError("GROQ_API_KEY is not set")
             from groq import AsyncGroq
 
-            self._client = AsyncGroq(api_key=self._settings.groq_api_key)
+            # Figures are described in the background, so waiting out Groq's per-minute limit
+            # (~20 s per retry) is fine; giving up after 2 retries lost figures in long PDFs.
+            self._client = AsyncGroq(api_key=self._settings.groq_api_key, max_retries=8)
         url = "data:image/jpeg;base64," + base64.b64encode(image_jpeg).decode()
         response = await self._client.chat.completions.create(
             model=self._settings.groq_vision_model,

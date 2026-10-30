@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass
@@ -256,7 +257,20 @@ async def _describe(candidate: Candidate, filename: str, user_id: uuid.UUID) -> 
         return _parse_caption(await providers.vision().describe(candidate.jpeg, prompt))
     except Exception:
         logger.warning("Describing a figure from %r%s failed", filename, page, exc_info=True)
+        # Keep a figure the document itself captions ("Fig: Bluetooth Piconet") rather than lose it.
+        return caption_from_context(candidate.context)
+
+
+_CAPTION_RE = re.compile(r"^\W*fig(?:ure)?\.?\s*[\d.]*\s*[:.\-–]\s*(.{3,120}?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def caption_from_context(context: str) -> tuple[str, str] | None:
+    """(title, description) from a caption line on the figure's page, e.g. "Fig: Bluetooth Piconet"."""
+    match = _CAPTION_RE.search(context or "")
+    if not match:
         return None
+    title = match.group(1).strip().rstrip(".")
+    return title, f"{title} (figure from the document; caption only). Text on the page: {' '.join(context.split())[:600]}"
 
 
 async def clear_figures(session: AsyncSession, document: Document) -> None:
