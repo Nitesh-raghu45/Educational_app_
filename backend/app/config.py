@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     web_images_enabled: bool = True
     serper_api_key: str = ""
     web_image_timeout: float = 0.8
+    # When the student asked for pictures, waiting a bit longer beats showing none.
+    web_image_timeout_requested: float = 1.5
     web_image_cache_seconds: int = 60 * 60 * 24
     history_window: int = 8
     summary_min_new_messages: int = 4

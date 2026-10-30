@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..models import ChatMessage, ChatSection
 from . import providers
+from .web_images import WEB_REQUEST
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ def _transcript(history: list[ChatMessage]) -> str:
     )
 
 
+_WEB_REQUEST_RE = re.compile(WEB_REQUEST, re.IGNORECASE)
+
 # Words that point back at the conversation ("explain it", "what about the second one?").
 _REFERENCE_RE = re.compile(
     r"\b(?:it|its|it's|this|that|these|those|they|them|their|theirs|he|him|his|she|her|hers|one|ones"
@@ -89,6 +92,8 @@ def needs_rewrite(question: str) -> bool:
         len(question.split()) <= 3
         or bool(_REFERENCE_RE.search(question))
         or bool(_CONTINUATION_RE.search(question))
+        # "ok then find out on the internet": the topic is in the conversation, not the message.
+        or bool(_WEB_REQUEST_RE.search(question))
     )
 
 

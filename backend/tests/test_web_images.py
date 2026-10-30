@@ -9,6 +9,7 @@ import pytest
 
 from app.config import get_settings
 from app.services import web_images
+from app.services.conversation import needs_rewrite
 from app.services.web_images import WebImage, image_intent, search_query
 
 from .conftest import parse_sse, register
@@ -38,13 +39,15 @@ class FakeSearch:
 
 
 @pytest.fixture
-def search(monkeypatch):
+async def search(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "web_images_enabled", True)
     monkeypatch.setattr(web_images, "_memory", {})
     fake = FakeSearch()
     web_images.override(fake)
     yield fake
+    # Searches that outlived their answer finish here, not in the next test's event loop.
+    await asyncio.gather(*web_images._running, return_exceptions=True)
     web_images.override(None)
 
 
@@ -63,6 +66,44 @@ def test_intent_and_query():
     assert image_intent("Define inflation") is None
     assert search_query("Show me a picture of the human heart") == "human heart"
     assert search_query("What does a neuron look like?") == "neuron"
+    # The Zigbee chat: web requests are picture requests, and filler words are dropped.
+    assert image_intent("ok then findout on the internet") == "explicit"
+    assert image_intent("search google for zigbee") == "explicit"
+    assert image_intent("What is the internet of things?") is None
+    assert search_query("ok get some images about zigbee so i can understand it") == "zigbee"
+    assert search_query("show me the zigbee related images that is inside my document") == "zigbee"
+    assert needs_rewrite("ok then findout on the internet")
+    assert search_query("Zigbee-related images inside the document") == "zigbee"
+
+
+def test_topic_prefers_the_question_own_words():
+    # The rewrite of "…about zigbee so i can understand it" dragged in earlier answers' titles.
+    rewritten = "Zigbee protocol stack official Zigbee logo ETRX357 Zigbee images"
+    assert web_images.topic_for("ok get some images about zigbee so i can understand it", rewritten) == "zigbee"
+    # No topic in the message itself: the rewrite supplies it.
+    assert web_images.topic_for("ok then findout on the internet", "Zigbee images on the internet") == "zigbee"
+    # "its structure" says what kind of picture, not of what.
+    assert web_images.topic_for("show me a picture of its structure", "Picture of the human heart") == "human heart structure"
+    assert len(web_images.topic_for("show me it", "one two three four five six seven").split()) == 5
+
+
+async def test_asked_for_pictures_get_longer_to_arrive(search, monkeypatch):
+    monkeypatch.setattr(get_settings(), "web_image_timeout", 0.05)
+    monkeypatch.setattr(get_settings(), "web_image_timeout_requested", 1.0)
+    search.delay = 0.2
+    assert await web_images.collect(web_images.start_search("Show me a photo of a volcano", "")) == [HEART]
+    web_images._memory.clear()
+    assert await web_images.collect(web_images.start_search("Explain the structure of a volcano", "")) == []
+
+
+def test_ranking_prefers_explanatory_pictures():
+    def image(title, description=""):
+        return WebImage(title, "https://x.org/a.png", "https://x.org/a", "x.org", "wikipedia", description)
+
+    stack, alliance, logo = image("Zigbee stack"), image("Connectivity Standards Alliance", "Maintains the Zigbee standard"), image("Zigbee logo")
+    assert web_images.relevance(stack, "zigbee") > web_images.relevance(alliance, "zigbee") > 0
+    assert web_images.relevance(logo, "zigbee") == 0  # explains nothing
+    assert web_images.relevance(logo, "zigbee logo") > 0  # unless a logo was asked for
 
 
 async def test_answer_shows_web_picture_inline(client, fake_llm, search):
@@ -102,7 +143,7 @@ async def test_unused_or_unneeded_pictures(client, fake_llm, search):
 
 
 async def test_slow_search_never_delays_the_answer(client, fake_llm, search, monkeypatch):
-    monkeypatch.setattr(get_settings(), "web_image_timeout", 0.1)
+    monkeypatch.setattr(get_settings(), "web_image_timeout_requested", 0.1)  # "Show me a photo…"
     search.delay = 1.0
     headers = await register(client)
     section_id = await new_section(client, headers)
@@ -130,16 +171,65 @@ async def test_failed_search_answers_normally(client, fake_llm, search):
     assert [n for n, _ in events][-1] == "done"
 
 
+NEBULA = WebImage("Crab Nebula", "https://upload.wikimedia.org/crab.jpg", "https://commons.wikimedia.org/wiki/File:Crab.jpg", "wikimedia.org", "wikipedia")
+
+
 async def test_picture_asked_for_but_not_in_documents(client, fake_llm, search):
+    search.images = [HEART, NEBULA]
     headers = await register(client)
     section_id = await new_section(client, headers)
     await upload_ready_doc(client, headers, section_id)
     events = parse_sse((await ask(client, headers, section_id, "Show me an image of a galaxy nebula")).text)
     text = "".join(d["text"] for n, d in events if n == "token")
-    assert "couldn't find" in text and text.endswith("[[web:1]]")
+    # Only the picture whose title names the topic: no model is choosing here.
+    assert "couldn't find" in text and text.endswith("[[web:2]]") and "[[web:1]]" not in text
     assert fake_llm.stream_calls == []
     citations = next(d for n, d in events if n == "citations")["citations"]
-    assert citations[0]["web_image"]["title"] == "Heart"
+    assert [c["web_image"]["title"] for c in citations] == ["Crab Nebula"]
+
+    # Nothing matching: no picture rather than an unrelated one.
+    search.images = [HEART]
+    web_images._memory.clear()
+    events = parse_sse((await ask(client, headers, section_id, "Show me an image of a galaxy nebula")).text)
+    assert "[[web:" not in "".join(d["text"] for n, d in events if n == "token")
+
+
+async def test_asked_for_pictures_but_model_shows_none(client, fake_llm, search):
+    """"No images in your document" and nothing else: the matching web pictures are added."""
+    search.images = [HEART, NEBULA]
+    headers = await register(client)
+    section_id = await new_section(client, headers)
+    await upload_ready_doc(client, headers, section_id)
+    write_answer(fake_llm, "There are no photosynthesis images in your document [1].")
+
+    events = parse_sse((await ask(client, headers, section_id, "Show me photosynthesis images from my document")).text)
+    text = "".join(d["text"] for n, d in events if n == "token")
+    # Neither title names photosynthesis: nothing is added rather than unrelated pictures.
+    assert text == "There are no photosynthesis images in your document [1]."
+
+    search.images = [WebImage("Photosynthesis diagram", "https://upload.wikimedia.org/p.png", "https://commons.wikimedia.org/wiki/File:P.png", "wikimedia.org", "wikipedia"), HEART]
+    web_images._memory.clear()
+    events = parse_sse((await ask(client, headers, section_id, "Show me photosynthesis images from my document")).text)
+    text = "".join(d["text"] for n, d in events if n == "token")
+    assert text.endswith("Here is a picture from the web that may help:\n\n[[web:1]]")
+    citations = next(d for n, d in events if n == "citations")["citations"]
+    assert [c["web_image"]["title"] for c in citations if "web_image" in c] == ["Photosynthesis diagram"]
+
+
+async def test_find_it_on_the_internet_follow_up(client, fake_llm, search):
+    """"ok then find out on the internet" names no topic: the rewrite supplies it from the chat."""
+    headers = await register(client)
+    section_id = await new_section(client, headers)
+    await upload_ready_doc(client, headers, section_id)
+    await ask(client, headers, section_id, "What does photosynthesis produce?")
+    search.calls.clear()
+
+    async def rewrite(messages, model, **kwargs):
+        return "Find photosynthesis images on the internet"
+
+    fake_llm.complete = rewrite
+    await ask(client, headers, section_id, "ok then findout on the internet")
+    assert search.calls == [("photosynthesis", True)]
 
 
 async def test_results_are_cached(search):
@@ -163,6 +253,17 @@ async def test_provider_parsing(monkeypatch):
                 },
             ]
             return httpx.Response(200, json={"query": {"pages": pages}})
+        if request.url.host == "commons.wikimedia.org":
+            assert request.url.params["gsrnamespace"] == "6"
+            files = [
+                {"index": 2, "title": "File:Heart diagram-en.svg",
+                 "imageinfo": [{"thumburl": "https://upload.wikimedia.org/t/heart-diagram.png", "thumbwidth": 800, "thumbheight": 640, "mime": "image/svg+xml"}]},
+                {"index": 1, "title": "File:Cardiology lecture.pdf",  # not a picture: skipped
+                 "imageinfo": [{"thumburl": "https://upload.wikimedia.org/t/lecture.jpg", "mime": "application/pdf"}]},
+                {"index": 3, "title": "File:Anatomy class 1900.jpg",  # matches nothing: dropped
+                 "imageinfo": [{"thumburl": "https://upload.wikimedia.org/t/class.jpg", "thumbwidth": 800, "thumbheight": 500, "mime": "image/jpeg"}]},
+            ]
+            return httpx.Response(200, json={"query": {"pages": files}})
         assert request.headers["X-API-KEY"] == "test-key"
         body = json.loads(request.content)
         assert body["q"] == "human heart"
@@ -186,10 +287,15 @@ async def test_provider_parsing(monkeypatch):
     monkeypatch.setattr(get_settings(), "serper_api_key", "test-key")
 
     images = await web_images.WebImageSearch().search("human heart", use_google=True)
-    assert [(i.title, i.provider) for i in images] == [("Heart", "wikipedia"), ("Heart anatomy", "google")]
+    assert [(i.title, i.source) for i in images] == [
+        ("Heart", "wikipedia.org"),
+        ("Heart diagram-en", "wikimedia.org"),
+        ("Heart anatomy", "example.org"),
+    ]  # "Anatomy class 1900" matches nothing, so it isn't offered at all
     assert images[0].page_url == "https://en.wikipedia.org/wiki/File:Diagram%20of%20the%20human%20heart.svg"
-    assert images[1].source == "example.org" and images[1].width == 1200
+    assert images[1].page_url == "https://commons.wikimedia.org/wiki/File:Heart_diagram-en.svg"
+    assert images[2].width == 1200
 
-    # Without a request for a picture, only Wikipedia is asked.
+    # Without a request for a picture, Google isn't asked (it costs money per search).
     images = await web_images.WebImageSearch().search("human heart", use_google=False)
-    assert [i.provider for i in images] == ["wikipedia"]
+    assert "example.org" not in [i.source for i in images]

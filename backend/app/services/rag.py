@@ -6,7 +6,6 @@ disconnects mid-stream. Events go to `emit`, which the SSE endpoint forwards to 
 
 import logging
 import re
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -63,6 +62,7 @@ WEB_RULES = """
 Pictures from the web (the WEB IMAGES list after the sources):
 - Each <image id="N"> is a picture found online for this topic, known to you only by its title, site and short description. To show one, write [[web:N]] on its own line directly after the paragraph or list it illustrates; it appears as the picture with its site and a link, so add no caption of your own.
 - Use a web image only when its title clearly matches what that part of the answer explains; at most 2 per answer, each at most once. If the student asked for a picture, image or photo, show the best-matching one.
+- If the student asks for pictures from their documents and the sources have no matching kind="figure", say so in one short sentence, then show the best-matching web images instead (saying they are from the web), rather than stopping there.
 - Web images are illustrations, never evidence: don't cite them, don't take facts from their titles, and keep every fact backed by the numbered sources.
 - A figure from the documents (kind="figure") always wins over a web image of the same thing: never show both for one section. A web image may be shown alongside a Mermaid diagram when they show different things (e.g. a photo of the organ and a flowchart of how it works)."""
 
@@ -71,6 +71,7 @@ NOT_FOUND_ANSWER = (
     "Try rephrasing the question, or upload/attach the material that covers it."
 )
 WEB_PICTURE_NOTE = "Here is a picture from the web that may help:"
+WEB_PICTURES_NOTE = "Here are some pictures from the web that may help:"
 
 _DOCUMENT_WORDS = r"(?:documents?|docs?|files?|pdfs?|notes?|resumes?|cvs?|papers?|chapters?|texts?|materials?|uploads?|attachments?)"
 # Questions about a document as a whole, e.g. "what is this document about", "summarize", "key points".
@@ -137,6 +138,24 @@ def build_messages(
         {"role": "user", "content": f"SOURCES:\n{format_sources(evidence)}{web}\n\nQUESTION: {question}{interpretation}"}
     )
     return messages
+
+
+def requested_pictures(question: str, query: str, images: list[WebImage], answer: str) -> str:
+    """Web pictures to add after an answer that shows none, when the student asked for pictures.
+
+    Only pictures whose title names the topic (no model is choosing them), at most 2; empty
+    when the student didn't ask, or the answer already shows a figure or web picture.
+    """
+    if not images or web_images.image_intent(question) != "explicit":
+        return ""
+    if WEB_REF_RE.search(answer) or FIGURE_REF_RE.search(answer):
+        return ""
+    topic = web_images.topic_for(question, query)
+    shown = [n for n, image in enumerate(images, 1) if web_images.relevance(image, topic) > 0][:2]
+    if not shown:
+        return ""
+    note = WEB_PICTURE_NOTE if len(shown) == 1 else WEB_PICTURES_NOTE
+    return f"\n\n{note}" + "".join(f"\n\n[[web:{n}]]" for n in shown)
 
 
 def web_image_citations(answer: str, images: list[WebImage]) -> list[dict[str, Any]]:
@@ -265,15 +284,13 @@ async def _generate(
     # The web picture search runs while history is loaded and the documents are searched, so it
     # adds no waiting. A standalone question can be searched at once; a follow-up ("show me a
     # picture of it") waits for the rewrite that says what "it" is.
-    image_search_started = time.monotonic()
-    image_task = None if conversation.needs_rewrite(ctx.question) else web_images.start_search(ctx.question, ctx.question)
+    image_search = None if conversation.needs_rewrite(ctx.question) else web_images.start_search(ctx.question, ctx.question)
     history = await conversation.recent_history(
         session, ctx.section_id, before=ctx.question_created_at, limit=settings.history_window
     )
     query = await conversation.rewrite_query(ctx.summary, history, ctx.question)
-    if image_task is None:
-        image_search_started = time.monotonic()
-        image_task = web_images.start_search(ctx.question, query)
+    if image_search is None:
+        image_search = web_images.start_search(ctx.question, query)
     evidence = await retrieve(
         session,
         user_id=ctx.user_id,
@@ -290,20 +307,23 @@ async def _generate(
         )
         evidence = (evidence + [e for e in opening if e.chunk_id not in seen])[: settings.retrieval_top_k]
 
-    images = await web_images.collect(image_task, image_search_started)
+    images = await web_images.collect(image_search)
 
     if not evidence:
         # No supporting evidence: answer with a fixed refusal instead of letting the model guess.
-        answer = NOT_FOUND_ANSWER
-        if images and web_images.image_intent(ctx.question) == "explicit":
-            # A picture states no facts, so the one the student asked for can still be shown.
-            answer += f"\n\n{WEB_PICTURE_NOTE}\n\n[[web:1]]"
+        # A picture states no facts, so the ones the student asked for can still be shown.
+        answer = NOT_FOUND_ANSWER + requested_pictures(ctx.question, query, images, NOT_FOUND_ANSWER)
         await emit("token", {"text": answer})
         citations = web_image_citations(answer, images)
     else:
         messages = build_messages(ctx.summary, history, evidence, ctx.question, query, images)
         effort = reasoning_effort_for(ctx.question, query)
         answer = (await _stream_answer(messages, effort, emit)).strip() or NOT_FOUND_ANSWER
+        # The model sometimes answers "no images in your document" and stops, though the student
+        # asked for pictures and matching ones were found: add them rather than leave them out.
+        if extra := requested_pictures(ctx.question, query, images, answer):
+            answer += extra
+            await emit("token", {"text": extra})
         citations = extract_citations(answer, evidence) + web_image_citations(answer, images)
 
     await emit("citations", {"citations": citations})
