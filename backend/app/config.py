@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Plain look-up questions ("what is X?") don't need medium reasoning, which only delays the
     # first word; questions that compare, explain why/how, solve or ask for visuals keep medium.
     groq_answer_simple_reasoning_effort: str = "low"
+    # When the answer model is rate-limited or overloaded, answer with this one right away (it has
+    # its own per-minute token budget) instead of waiting. Empty = wait for the answer model.
+    groq_fallback_model: str = "openai/gpt-oss-20b"
     groq_fast_reasoning_effort: str = "low"
 
     pinecone_api_key: str = ""

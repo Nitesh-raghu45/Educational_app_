@@ -19,6 +19,7 @@ from ..config import get_settings
 from ..db import SessionLocal
 from ..models import ChatMessage, ChatSection, utcnow
 from . import conversation, providers, web_images
+from .llm import ModelBusy
 from .retrieval import Evidence, format_sources, leading_chunks, retrieve
 from .sections import ready_document_ids
 from .web_images import WebImage, format_web_images
@@ -44,16 +45,22 @@ Visuals (use them when a picture genuinely helps understanding; build them only 
 - Place each visual inline, directly after the paragraph, list or section it illustrates, never collected at the end, and never under its own heading such as "Visual", "Diagram" or "Visual summary". The text around it stays complete: a visual is an extra aid, not a replacement for the explanation. Example layout: "### How a request travels" → steps → its flowchart → "### Three-way handshake" → steps → its sequence diagram.
 - When an answer explains a process, sequence of steps or structure in its own section, give that section its own visual; up to 3 visuals per answer. Short factual answers need none.
 - If the student asks ONLY for a diagram, chart, graph, flowchart or mind map (e.g. "just the diagram", "only a flowchart", "draw …"), give only that visual with at most one short sentence introducing it (cite there), and no further explanation.
-- Sources with kind="figure" are real figures (diagrams, charts, photos) from the student's documents, given as text descriptions. To show one, write [[figure:N]] (N = its source number) on its own line, directly after the paragraph or list it illustrates (not in a separate section at the end); it appears as the actual image with its title and source, so add no caption line of your own. When a real figure shows the same thing you would draw, show the figure INSTEAD of a Mermaid diagram or chart, never both. Show each figure at most once, and only figures that match what you are explaining. Facts from a figure's description are cited like any source.
-- Choosing a visual: if a kind="figure" source shows what the section explains, use [[figure:N]] there and draw nothing for that section. Draw a diagram or chart only when no figure fits.
 - Processes, steps, flows, layers, architectures, hierarchies, cause and effect, timelines or interactions: add a Mermaid diagram in a ```mermaid code block. Use flowchart TD/LR, sequenceDiagram, mindmap or timeline. At most 15 nodes. Put every node label in double quotes, e.g. A["Physical layer (1)"]. Short labels. No styling, classDef, click or HTML. No citation numbers inside the diagram; cite in the sentence that introduces it.
 - Numbers the sources give for comparison or change over time: add a ```chart code block with JSON only, one of:
   {"type": "bar" | "line", "title": "...", "x_label": "...", "y_label": "...", "labels": ["A", "B"], "series": [{"name": "...", "values": [1, 2]}]}
   {"type": "pie", "title": "...", "labels": ["A", "B"], "values": [60, 40]}
   {"type": "function", "title": "...", "x": [-5, 5], "functions": [{"expr": "x^2 - 2*x", "label": "y = x² − 2x"}]} for a formula from the sources (use x, + - * / ^, sqrt, sin, cos, tan, log, ln, exp, abs, pi, e).
-- Never invent data or relationships for a visual; skip it when the sources don't support one, and don't add visuals to short factual answers.
+- Never invent data or relationships for a visual; skip it when the sources don't support one, and don't add visuals to short factual answers."""
 
-Pictures from the web (only when a WEB IMAGES list follows the sources):
+# Only sent when they apply, so ordinary questions don't pay for them in tokens (Groq's free
+# tier allows 8,000 tokens per minute for the answer model, shared by every student).
+FIGURE_RULES = """
+Real figures from the documents:
+- Sources with kind="figure" are real figures (diagrams, charts, photos) from the student's documents, given as text descriptions. To show one, write [[figure:N]] (N = its source number) on its own line, directly after the paragraph or list it illustrates (not in a separate section at the end); it appears as the actual image with its title and source, so add no caption line of your own. When a real figure shows the same thing you would draw, show the figure INSTEAD of a Mermaid diagram or chart, never both. Show each figure at most once, and only figures that match what you are explaining. Facts from a figure's description are cited like any source.
+- Choosing a visual: if a kind="figure" source shows what the section explains, use [[figure:N]] there and draw nothing for that section. Draw a diagram or chart only when no figure fits."""
+
+WEB_RULES = """
+Pictures from the web (the WEB IMAGES list after the sources):
 - Each <image id="N"> is a picture found online for this topic, known to you only by its title, site and short description. To show one, write [[web:N]] on its own line directly after the paragraph or list it illustrates; it appears as the picture with its site and a link, so add no caption of your own.
 - Use a web image only when its title clearly matches what that part of the answer explains; at most 2 per answer, each at most once. If the student asked for a picture, image or photo, show the best-matching one.
 - Web images are illustrations, never evidence: don't cite them, don't take facts from their titles, and keep every fact backed by the numbered sources.
@@ -115,7 +122,12 @@ def build_messages(
     query: str,
     images: list[WebImage] | None = None,
 ) -> list[dict[str, str]]:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    system = SYSTEM_PROMPT
+    if any(e.figure for e in evidence):
+        system += "\n" + FIGURE_RULES
+    if images:
+        system += "\n" + WEB_RULES
+    messages = [{"role": "system", "content": system}]
     if summary:
         messages.append({"role": "system", "content": f"Summary of the earlier conversation:\n{summary}"})
     messages.extend(conversation.history_as_chat(history))
@@ -196,6 +208,29 @@ async def _load_context(session: AsyncSession, assistant_message_id: uuid.UUID) 
     )
 
 
+async def _stream_answer(messages: list[dict[str, str]], effort: str, emit: Emit) -> str:
+    """Stream from the answer model; if it is busy (rate limit, overload) before the first word,
+    switch to the fallback model at once instead of waiting out the limit."""
+    settings = get_settings()
+    fallback = settings.groq_fallback_model
+    can_fall_back = bool(fallback) and fallback != settings.groq_answer_model
+    parts: list[str] = []
+    try:
+        async for delta in providers.llm().stream(
+            messages, model=settings.groq_answer_model, reasoning_effort=effort, retry=not can_fall_back
+        ):
+            parts.append(delta)
+            await emit("token", {"text": delta})
+    except ModelBusy:
+        if parts or not can_fall_back:
+            raise
+        logger.warning("%s is busy; answering with %s", settings.groq_answer_model, fallback)
+        async for delta in providers.llm().stream(messages, model=fallback, reasoning_effort=effort):
+            parts.append(delta)
+            await emit("token", {"text": delta})
+    return "".join(parts)
+
+
 async def generate_answer(assistant_message_id: uuid.UUID, emit: Emit, context: AnswerContext | None = None) -> None:
     async with SessionLocal() as session:
         try:
@@ -266,13 +301,9 @@ async def _generate(
         await emit("token", {"text": answer})
         citations = web_image_citations(answer, images)
     else:
-        parts: list[str] = []
         messages = build_messages(ctx.summary, history, evidence, ctx.question, query, images)
         effort = reasoning_effort_for(ctx.question, query)
-        async for delta in providers.llm().stream(messages, model=settings.groq_answer_model, reasoning_effort=effort):
-            parts.append(delta)
-            await emit("token", {"text": delta})
-        answer = "".join(parts).strip() or NOT_FOUND_ANSWER
+        answer = (await _stream_answer(messages, effort, emit)).strip() or NOT_FOUND_ANSWER
         citations = extract_citations(answer, evidence) + web_image_citations(answer, images)
 
     await emit("citations", {"citations": citations})

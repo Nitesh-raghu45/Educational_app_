@@ -2,6 +2,13 @@ from typing import Any, AsyncIterator
 
 from ..config import Settings
 
+# Rate limited (429), Groq's capacity limit (498) or overloaded (5xx): another model may still answer.
+_BUSY_STATUSES = {429, 498, 500, 502, 503}
+
+
+class ModelBusy(Exception):
+    """The model can't take this request right now; a different model might."""
+
 
 class GroqLLM:
     def __init__(self, settings: Settings):
@@ -36,16 +43,27 @@ class GroqLLM:
         temperature: float = 0.2,
         max_tokens: int = 4096,
         reasoning_effort: str | None = None,
+        retry: bool = True,
     ) -> AsyncIterator[str]:
-        # max_completion_tokens also covers reasoning tokens, so it is set well above the answer length.
-        stream = await self._get_client().chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            stream=True,
-            **self._reasoning_options(model, reasoning_effort),
-        )
+        """Streams the reply. With retry=False a busy model raises ModelBusy at once, instead of
+        the client waiting out the rate limit (often 10+ s), so the caller can switch models."""
+        from groq import APIStatusError
+
+        client = self._get_client() if retry else self._get_client().with_options(max_retries=0)
+        try:
+            # max_completion_tokens also covers reasoning tokens, so it is set well above the answer length.
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_completion_tokens=max_tokens,
+                stream=True,
+                **self._reasoning_options(model, reasoning_effort),
+            )
+        except APIStatusError as exc:
+            if exc.status_code in _BUSY_STATUSES:
+                raise ModelBusy(f"{model}: HTTP {exc.status_code}") from exc
+            raise
         async for chunk in stream:
             if chunk.choices and (delta := chunk.choices[0].delta.content):
                 yield delta

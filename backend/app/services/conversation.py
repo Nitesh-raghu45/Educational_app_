@@ -15,6 +15,7 @@ from . import providers
 logger = logging.getLogger(__name__)
 
 MAX_HISTORY_CHARS = 1500
+OLDER_HISTORY_CHARS = 500
 
 
 def _clip(text: str, limit: int = MAX_HISTORY_CHARS) -> str:
@@ -56,7 +57,13 @@ async def recent_history(
 
 
 def history_as_chat(history: list[ChatMessage]) -> list[dict[str, str]]:
-    return [{"role": m.role, "content": _clip(_context_text(m))} for m in history]
+    # The latest exchange in full (follow-ups mostly refer to it); older messages shortened, since
+    # every token counts against the answer model's per-minute budget.
+    last = len(history) - 2
+    return [
+        {"role": m.role, "content": _clip(_context_text(m), MAX_HISTORY_CHARS if i >= last else OLDER_HISTORY_CHARS)}
+        for i, m in enumerate(history)
+    ]
 
 
 def _transcript(history: list[ChatMessage]) -> str:
