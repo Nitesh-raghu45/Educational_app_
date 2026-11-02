@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import uuid
+from collections import Counter
 
 import pytest
 from PIL import Image, ImageDraw
@@ -11,7 +12,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import DocumentChunk, DocumentFigure, FigureImage
+from app.models import DailyUsage, Document, DocumentChunk, DocumentFigure, FigureImage, FigureScan
 from app.services import figures, ingestion, jobs, providers
 from app.services.rag import extract_citations
 from app.services.retrieval import Evidence, format_sources
@@ -240,3 +241,39 @@ async def test_figure_kept_by_its_caption_when_description_fails(monkeypatch):
     uncaptioned = figures.Candidate(7, b"webp", b"\xff\xd8jpeg", 400, 300, "f2", "Just a paragraph.")
     assert await figures._describe(uncaptioned, "Module_II.pdf", uuid.uuid4()) is None
     assert figures.caption_from_context("Figure 4.1: Food chain")[0] == "Food chain"
+
+
+async def test_over_the_daily_limit_captioned_figures_are_still_kept(monkeypatch):
+    class NoVision:
+        async def describe(self, image_jpeg, prompt):
+            raise AssertionError("the vision model must not be called over the limit")
+
+    async def limit_reached(user_id):
+        return False
+
+    monkeypatch.setattr(figures, "_reserve_caption", limit_reached)
+    providers.override(vision=NoVision())
+    stats = Counter()
+    captioned = figures.Candidate(7, b"webp", b"\xff\xd8jpeg", 400, 300, "f1", "Fig: Bluetooth protocol stack")
+    plain = figures.Candidate(8, b"webp", b"\xff\xd8jpeg", 400, 300, "f2", "Just a paragraph.")
+    assert (await figures._describe(captioned, "Module_II.pdf", uuid.uuid4(), stats))[0] == "Bluetooth protocol stack"
+    assert await figures._describe(plain, "Module_II.pdf", uuid.uuid4(), stats) is None
+    assert stats == {"over daily limit, kept by caption": 1, "over daily limit, skipped": 1}
+
+
+async def test_a_failed_run_gives_back_its_daily_descriptions(client, vision, monkeypatch):
+    def broken_upsert(*args, **kwargs):
+        raise RuntimeError("Pinecone down")
+
+    headers = await register(client)
+    doc_id = await upload_image(client, headers, await new_section(client, headers), monkeypatch)
+    async with SessionLocal() as session:
+        user_id = (await session.get(Document, doc_id)).user_id
+        before = await session.scalar(select(DailyUsage.count).where(DailyUsage.user_id == user_id, DailyUsage.kind == "figure"))
+
+    monkeypatch.setattr(providers.vector_store(), "upsert", broken_upsert)
+    await figures.process_document(doc_id)
+    async with SessionLocal() as session:
+        after = await session.scalar(select(DailyUsage.count).where(DailyUsage.user_id == user_id, DailyUsage.kind == "figure"))
+        assert (await session.get(FigureScan, doc_id)).status == "failed"
+    assert after == before  # the failed run's description was refunded

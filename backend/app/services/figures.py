@@ -247,17 +247,31 @@ async def _reserve_caption(user_id: uuid.UUID) -> bool:
         return True
 
 
-async def _describe(candidate: Candidate, filename: str, user_id: uuid.UUID) -> tuple[str, str] | None:
+async def _describe(
+    candidate: Candidate, filename: str, user_id: uuid.UUID, stats: Counter | None = None
+) -> tuple[str, str] | None:
+    """The figure's (title, description), or None to leave it out. `stats` counts what happened,
+    for the log and for refunding the daily limit if the whole run fails."""
+    stats = stats if stats is not None else Counter()
     if not await _reserve_caption(user_id):
-        return None
+        # Today's limit is used up: a figure the document captions ("Fig: Bluetooth Piconet")
+        # is still kept under that caption, which costs no vision call.
+        caption = caption_from_context(candidate.context)
+        stats["over daily limit, kept by caption" if caption else "over daily limit, skipped"] += 1
+        return caption
+    stats["reserved"] += 1
     page = f", page {candidate.page}" if candidate.page else ""
     prompt = VISION_PROMPT.format(filename=filename, page=page, context=candidate.context or "(none)")
     try:
-        return _parse_caption(await providers.vision().describe(candidate.jpeg, prompt))
+        caption = _parse_caption(await providers.vision().describe(candidate.jpeg, prompt))
+        stats["described" if caption else "not useful"] += 1
+        return caption
     except Exception:
         logger.warning("Describing a figure from %r%s failed", filename, page, exc_info=True)
         # Keep a figure the document itself captions ("Fig: Bluetooth Piconet") rather than lose it.
-        return caption_from_context(candidate.context)
+        caption = caption_from_context(candidate.context)
+        stats["vision failed, kept by caption" if caption else "vision failed, skipped"] += 1
+        return caption
 
 
 _CAPTION_RE = re.compile(r"^\W*fig(?:ure)?\.?\s*[\d.]*\s*[:.\-–]\s*(.{3,120}?)\s*$", re.IGNORECASE | re.MULTILINE)
@@ -321,6 +335,8 @@ async def process_document(document_id: uuid.UUID) -> None:
             if await session.get(FigureScan, doc.id) is not None:
                 await _set_scan(session, doc.id, "failed")
             return
+        stats: Counter = Counter()
+        user_id = doc.user_id  # still readable after a rollback
         try:
             await _set_scan(session, doc.id, "processing")
             await clear_figures(session, doc)
@@ -333,7 +349,7 @@ async def process_document(document_id: uuid.UUID) -> None:
 
             async def describe(candidate: Candidate):
                 async with slots:
-                    return await _describe(candidate, doc.filename, doc.user_id)
+                    return await _describe(candidate, doc.filename, doc.user_id, stats)
 
             captions = await asyncio.gather(*(describe(c) for c in candidates))
             described = [(c, cap) for c, cap in zip(candidates, captions) if cap][:limit]
@@ -370,12 +386,20 @@ async def process_document(document_id: uuid.UUID) -> None:
                 doc.updated_at = utcnow()  # refreshes the keyword-search cache for this document
             await session.commit()
             await _set_scan(session, doc.id, "done", len(rows))
+            details = ", ".join(f"{n} {what}" for what, n in stats.items() if what != "reserved")
             logger.info(
-                "Figures for document %s (%r): %d candidate(s), %d kept", doc.id, doc.filename, len(candidates), len(rows)
+                "Figures for document %s (%r): %d candidate(s), %d kept (%s)",
+                doc.id, doc.filename, len(candidates), len(rows), details or "none described",
             )
         except Exception:
             logger.exception("Figure extraction failed for document %s", document_id)
             await session.rollback()
+            # Nothing was kept, so the descriptions don't count against today's limit.
+            try:
+                for _ in range(stats["reserved"]):
+                    await usage.refund(session, user_id, "figure")
+            except Exception:
+                await session.rollback()
             try:
                 await _set_scan(session, document_id, "failed")
             except Exception:
