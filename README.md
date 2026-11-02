@@ -122,7 +122,7 @@ Real figures from the student's files appear in answers, next to the text they i
 2. **Describe:** a Groq vision model (`qwen/qwen3.8-27b`) writes a title and description of each figure,
    and drops ones with no study value. About 800 input tokens per figure, counted against a daily
    per-user limit (`DAILY_FIGURE_LIMIT`).
-3. **Store and index:** images are saved as WebP in Cloudflare R2 (or local disk without R2 settings),
+3. **Store and index:** images are saved as WebP in the database (`figure_images` table, so they survive restarts),
    and each description becomes an extra searchable chunk, so hybrid search finds figures like text.
 4. **Answer:** figure sources are marked `kind="figure"`; the model shows one by writing `[[figure:N]]`,
    which the app renders as the image with its title and page. Images are served only through
@@ -241,4 +241,4 @@ Attempts are scored and stored.
 - **Documents are processed inline** (`INGEST_MODE=inline`). Render's free plan has no background workers, and its disk is wiped on restart.
 - **Memory:** `EMBEDDING_BATCH_SIZE=8` keeps peak memory around 315 MB, under the free plan's 512 MB.
 - **URLs:** set `VITE_API_URL` on `edu-web` to the API URL, and `CORS_ORIGINS` on `edu-api` to `["https://<edu-web>.onrender.com"]`.
-- **Figures:** set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` on `edu-api`, so figure images survive restarts. Without them, figures disappear when Render restarts.
+- **Figures:** images are stored in MySQL (about 30-100 KB each), so they survive restarts with no extra service to set up.

@@ -11,8 +11,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.figure_store import figure_store
-from app.models import DocumentChunk, DocumentFigure
+from app.models import DocumentChunk, DocumentFigure, FigureImage
 from app.services import figures, ingestion, jobs, providers
 from app.services.rag import extract_citations
 from app.services.retrieval import Evidence, format_sources
@@ -181,11 +180,11 @@ async def test_deleting_a_document_deletes_its_figures(client, vision, monkeypat
     doc_id = await upload_image(client, headers, await new_section(client, headers), monkeypatch)
     async with SessionLocal() as session:
         figure = await session.scalar(select(DocumentFigure).where(DocumentFigure.document_id == doc_id))
-    assert figure_store().get(figure.storage_key) is not None
+        assert await session.get(FigureImage, figure.storage_key) is not None
 
     assert (await client.delete(f"/api/v1/documents/{doc_id}", headers=headers)).status_code == 204
-    assert figure_store().get(figure.storage_key) is None
     async with SessionLocal() as session:
+        assert await session.get(FigureImage, figure.storage_key) is None
         assert await session.get(DocumentFigure, figure.id) is None
         assert await session.get(DocumentChunk, figure.chunk_id) is None
 
@@ -218,32 +217,6 @@ async def test_figure_failures_never_break_the_document(client, monkeypatch, fak
     await upload_image(client, headers, await new_section(client, headers), monkeypatch)
     docs = (await client.get("/api/v1/documents", headers=headers)).json()
     assert docs[0]["status"] == "ready" and docs[0]["figure_count"] == 0 and docs[0]["figure_status"] == "done"
-
-
-def test_r2_store_uses_the_bucket_correctly():
-    from botocore.stub import Stubber
-
-    from app.config import Settings
-    from app.figure_store import R2FigureStore
-
-    store = R2FigureStore(
-        Settings(r2_account_id="acc123", r2_access_key_id="key", r2_secret_access_key="secret", r2_bucket="figs")
-    )
-    assert store.client.meta.endpoint_url == "https://acc123.r2.cloudflarestorage.com"
-    with Stubber(store.client) as stub:
-        stub.add_response(
-            "put_object", {}, {"Bucket": "figs", "Key": "a.webp", "Body": b"img", "ContentType": "image/webp"}
-        )
-        stub.add_client_error("get_object", "NoSuchKey", http_status_code=404)
-        stub.add_response(
-            "delete_objects",
-            {},
-            {"Bucket": "figs", "Delete": {"Objects": [{"Key": "a.webp"}], "Quiet": True}},
-        )
-        store.put("a.webp", b"img", "image/webp")
-        assert store.get("missing.webp") is None
-        store.delete(["a.webp"])
-        stub.assert_no_pending_responses()
 
 
 async def test_figure_kept_by_its_caption_when_description_fails(monkeypatch):

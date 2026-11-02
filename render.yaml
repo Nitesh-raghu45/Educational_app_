@@ -25,15 +25,6 @@ services:
         sync: false
       - key: CORS_ORIGINS         # ["https://<your edu-web name>.onrender.com"]
         sync: false
-      # Cloudflare R2 bucket for figure images (otherwise they are lost on every restart).
-      - key: R2_ACCOUNT_ID
-        sync: false
-      - key: R2_ACCESS_KEY_ID
-        sync: false
-      - key: R2_SECRET_ACCESS_KEY
-        sync: false
-      - key: R2_BUCKET
-        sync: false
       # Optional: Google Images results via Serper.dev (Wikipedia pictures work without it).
       - key: SERPER_API_KEY
         sync: false

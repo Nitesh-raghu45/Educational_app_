@@ -22,8 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..db import SessionLocal
 from ..errors import AppError
-from ..figure_store import figure_key, figure_store
-from ..models import Document, DocumentChunk, DocumentFigure, FigureScan, utcnow
+from ..models import Document, DocumentChunk, DocumentFigure, FigureImage, FigureScan, utcnow
 from . import providers, usage
 
 logger = logging.getLogger(__name__)
@@ -280,7 +279,7 @@ async def clear_figures(session: AsyncSession, document: Document) -> None:
         return
     chunk_ids = [f.chunk_id for f in figures]
     await asyncio.to_thread(providers.vector_store().delete, providers.namespace_for(document.user_id), chunk_ids)
-    await asyncio.to_thread(figure_store().delete, [f.storage_key for f in figures])
+    await session.execute(delete(FigureImage).where(FigureImage.document_id == document.id))
     await session.execute(delete(DocumentFigure).where(DocumentFigure.document_id == document.id))
     await session.execute(delete(DocumentChunk).where(DocumentChunk.id.in_(chunk_ids)))
 
@@ -338,11 +337,9 @@ async def process_document(document_id: uuid.UUID) -> None:
             captions = await asyncio.gather(*(describe(c) for c in candidates))
             described = [(c, cap) for c, cap in zip(candidates, captions) if cap][:limit]
 
-            rows, chunks = [], []
-            store = figure_store()
+            rows, chunks, images = [], [], []
             for n, (candidate, (title, description)) in enumerate(described):
                 key = figure_key(doc.user_id, doc.id, n)
-                await asyncio.to_thread(store.put, key, candidate.webp, "image/webp")
                 where = f"page {candidate.page}" if candidate.page else doc.filename
                 chunk = DocumentChunk(
                     id=f"{doc.id.hex}-fig-{n}",
@@ -352,6 +349,7 @@ async def process_document(document_id: uuid.UUID) -> None:
                     text=f"Figure ({where}): {title}. {description}",
                 )
                 chunks.append(chunk)
+                images.append(FigureImage(storage_key=key, document_id=doc.id, data=candidate.webp))
                 rows.append(
                     DocumentFigure(
                         document_id=doc.id, chunk_id=chunk.id, page=candidate.page, storage_key=key,
@@ -367,6 +365,7 @@ async def process_document(document_id: uuid.UUID) -> None:
                 await asyncio.to_thread(providers.vector_store().upsert, providers.namespace_for(doc.user_id), items)
                 session.add_all(chunks)
                 session.add_all(rows)
+                session.add_all(images)
                 doc.updated_at = utcnow()  # refreshes the keyword-search cache for this document
             await session.commit()
             await _set_scan(session, doc.id, "done", len(rows))
@@ -402,3 +401,7 @@ async def get_owned_figure(session: AsyncSession, figure_id: uuid.UUID, user_id:
     if figure is None:
         raise AppError(404, "FIGURE_NOT_FOUND", "This figure does not exist.")
     return figure
+
+
+def figure_key(user_id, document_id, index: int) -> str:
+    return f"user-{user_id.hex}/doc-{document_id.hex}/fig-{index}.webp"

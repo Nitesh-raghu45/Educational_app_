@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    LargeBinary,
     Date,
     DateTime,
     ForeignKey,
@@ -156,6 +157,20 @@ class DocumentFigure(Base):
     title: Mapped[str] = mapped_column(String(200))
     caption: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class FigureImage(Base):
+    """A figure's WebP image, kept in the database so it survives restarts of hosts with
+    temporary disks (like Render's free plan). Figures are small (~30-100 KB each)."""
+
+    __tablename__ = "figure_images"
+
+    storage_key: Mapped[str] = mapped_column(String(300), primary_key=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    # MySQL's plain BLOB stops at 64 KB; MEDIUMBLOB holds up to 16 MB.
+    data: Mapped[bytes] = mapped_column(LargeBinary().with_variant(mysql.MEDIUMBLOB(), "mysql", "mariadb"))
 
 
 class FigureScan(Base):

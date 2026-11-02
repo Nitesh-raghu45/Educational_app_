@@ -1,4 +1,3 @@
-import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, Response
@@ -6,8 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..errors import AppError
-from ..figure_store import figure_store
-from ..models import User
+from ..models import FigureImage, User
 from ..security import current_user
 from ..services.figures import get_owned_figure
 
@@ -20,8 +18,8 @@ async def get_figure(
 ) -> Response:
     """The figure image, only for the student who owns the document it came from."""
     figure = await get_owned_figure(session, figure_id, user.id)
-    data = await asyncio.to_thread(figure_store().get, figure.storage_key)
-    if data is None:
+    image = await session.get(FigureImage, figure.storage_key)
+    if image is None:
         raise AppError(404, "FIGURE_NOT_FOUND", "This figure's image is no longer stored. Upload the document again.")
     # Images never change for an id (re-processing makes new ids), so browsers may keep them.
-    return Response(content=data, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
+    return Response(content=image.data, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})

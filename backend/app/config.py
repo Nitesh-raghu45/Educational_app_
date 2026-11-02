@@ -93,12 +93,6 @@ class Settings(BaseSettings):
     groq_vision_model: str = "qwen/qwen3.8-27b"
     max_figures_per_document: int = 30
     daily_figure_limit: int = 150
-    # Cloudflare R2 (S3-compatible) bucket for figure images. Empty = local disk under
-    # storage_dir/figures, which is fine locally but wiped on hosts like Render on restart.
-    r2_account_id: str = ""
-    r2_access_key_id: str = ""
-    r2_secret_access_key: str = ""
-    r2_bucket: str = ""
     # Pictures from the web in answers: Wikipedia images (free) and, with a Serper.dev key,
     # Google Images (used only when the student asks for a picture). The search runs alongside
     # document retrieval and is dropped if it takes longer than web_image_timeout seconds.
