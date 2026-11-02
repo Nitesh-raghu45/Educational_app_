@@ -16,7 +16,7 @@ from sqlalchemy import delete, select
 from ..config import get_settings
 from ..db import SessionLocal
 from ..models import Document, DocumentChunk, DocumentEmbedding, utcnow
-from . import figures, providers
+from . import figures, providers, stored_files
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +226,7 @@ async def ingest_document(document_id: uuid.UUID) -> None:
         namespace = providers.namespace_for(doc.user_id)
         details = f"{doc.filename!r}, {doc.size_bytes // 1024} KB"
         try:
-            if not Path(doc.storage_path).exists():
+            if not await stored_files.ensure_local(session, doc):
                 raise IngestionError("The uploaded file is no longer on the server (it restarted). Please upload it again.")
             pages, ocr_pages = await asyncio.to_thread(extract_text, Path(doc.storage_path))
             timer.lap("parse+ocr" if ocr_pages else "parse")
@@ -303,7 +303,7 @@ async def reembed_document(document_id: uuid.UUID) -> None:
         doc = await session.get(Document, document_id)
         if doc is None or doc.status != "ready":
             return
-        if Path(doc.storage_path).exists():
+        if await stored_files.ensure_local(session, doc):
             await session.close()
             await ingest_document(document_id)
             return

@@ -23,7 +23,7 @@ from ..config import get_settings
 from ..db import SessionLocal
 from ..errors import AppError
 from ..models import Document, DocumentChunk, DocumentFigure, FigureImage, FigureScan, utcnow
-from . import providers, usage
+from . import providers, stored_files, usage
 
 logger = logging.getLogger(__name__)
 
@@ -315,8 +315,9 @@ async def process_document(document_id: uuid.UUID) -> None:
         doc = await session.get(Document, document_id)
         if doc is None or doc.status != "ready":
             return
-        if not Path(doc.storage_path).exists():
-            # The file was lost (e.g. a host restart wiped the disk): stop showing "processing".
+        if not await stored_files.ensure_local(session, doc):
+            # The file was lost (a restart wiped the disk, and it was uploaded before copies were
+            # kept in the database): stop showing "processing".
             if await session.get(FigureScan, doc.id) is not None:
                 await _set_scan(session, doc.id, "failed")
             return

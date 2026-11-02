@@ -192,8 +192,9 @@ and polls `GET /documents/{id}/status`.
   another model are re-embedded in the background: from the file if it is still on disk, otherwise from
   the chunk text stored in the database, so nobody needs to re-upload.
 - **Reliability:** Pinecone calls have timeouts and retries. Documents left processing by a restart are
-  picked up again at startup. If the file was lost (Render's disk is wiped on restart), the document is
-  marked failed with "please upload again".
+  picked up again at startup, and so is figure extraction. Each upload is also kept in the database
+  (`document_file_parts`, in 4 MB parts), so when a restart wipes the disk (Render's free plan) the
+  file is restored from there instead of being lost.
 
 ### Latency
 - **Fewer round trips:** one question costs 12 SQL statements (pinned by
@@ -238,7 +239,7 @@ Attempts are scored and stored.
 [`render.yaml`](render.yaml) defines two services: `edu-api` (Docker, free plan) and `edu-web` (static site).
 
 - **Database:** use a managed MySQL that doesn't expire (for example Aiven's free MySQL). Set `DATABASE_URL=mysql+aiomysql://…`, keep `DATABASE_SSL=true`, and paste the provider's CA certificate into `DATABASE_SSL_CA`. Render's free Postgres is deleted after 30 days, and this app's driver is MySQL/MariaDB.
-- **Documents are processed inline** (`INGEST_MODE=inline`). Render's free plan has no background workers, and its disk is wiped on restart.
+- **Documents are processed inline** (`INGEST_MODE=inline`). Render's free plan has no background workers, and its disk is wiped on restart (uploads and figures are kept in MySQL, so nothing is lost).
 - **Memory:** `EMBEDDING_BATCH_SIZE=8` keeps peak memory around 315 MB, under the free plan's 512 MB.
 - **URLs:** set `VITE_API_URL` on `edu-web` to the API URL, and `CORS_ORIGINS` on `edu-api` to `["https://<edu-web>.onrender.com"]`.
 - **Figures:** images are stored in MySQL (about 30-100 KB each), so they survive restarts with no extra service to set up.

@@ -159,6 +159,18 @@ class DocumentFigure(Base):
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
 
 
+class DocumentFilePart(Base):
+    """Part of an uploaded file's copy in the database (see services/stored_files.py)."""
+
+    __tablename__ = "document_file_parts"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    part: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary().with_variant(mysql.MEDIUMBLOB(), "mysql", "mariadb"))
+
+
 class FigureImage(Base):
     """A figure's WebP image, kept in the database so it survives restarts of hosts with
     temporary disks (like Render's free plan). Figures are small (~30-100 KB each)."""

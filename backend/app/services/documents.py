@@ -12,7 +12,7 @@ from .. import storage
 from ..config import get_settings
 from ..errors import AppError
 from ..models import Document, DocumentChunk, DocumentFigure, DocumentHash, FigureImage, FigureScan, SectionDocument
-from . import figures, providers, usage
+from . import figures, providers, stored_files, usage
 from .sections import get_owned_section
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ async def save_upload(
     session.add(doc)
     await session.flush()
     session.add(DocumentHash(document_id=document_id, user_id=user_id, sha256=sha256))
+    await stored_files.save(session, document_id, path)
     if section_id is not None:
         session.add(SectionDocument(section_id=section_id, document_id=document_id))
     await session.commit()
@@ -127,12 +128,14 @@ async def _reuse(
     already = section_id is not None and await session.get(SectionDocument, (section_id, doc.id)) is not None
     if section_id is not None and not already:
         session.add(SectionDocument(section_id=section_id, document_id=doc.id))
-    if Path(doc.storage_path).exists():
+    if not await stored_files.has_copy(session, doc.id):
+        # Uploaded before copies were kept in the database. If the server also lost the file
+        # (e.g. a restart on Render), keep this upload instead; either way, keep a copy now.
+        if not Path(doc.storage_path).exists():
+            doc.storage_path = str(new_path)
+        await stored_files.save(session, doc.id, Path(doc.storage_path))
+    if doc.storage_path != str(new_path):
         storage.delete(str(new_path))
-    else:
-        # The server lost its copy (e.g. a restart on Render): keep this one, so figures and
-        # re-embedding can use it again.
-        doc.storage_path = str(new_path)
     # Figures never extracted (uploaded before figure extraction existed), extraction failed, or
     # their images were lost (kept on a disk a restart wiped): now that the file is here, extract them.
     scan = await session.get(FigureScan, doc.id)
@@ -239,6 +242,7 @@ async def delete_document(session: AsyncSession, document_id: uuid.UUID, user_id
     await session.execute(delete(SectionDocument).where(SectionDocument.document_id == doc.id))
     await session.execute(delete(FigureScan).where(FigureScan.document_id == doc.id))
     await session.execute(delete(DocumentHash).where(DocumentHash.document_id == doc.id))
+    await stored_files.remove(session, doc.id)
     await session.execute(delete(Document).where(Document.id == doc.id))
     await session.commit()
     storage.delete(doc.storage_path)

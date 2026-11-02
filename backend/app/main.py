@@ -12,7 +12,7 @@ from .api import auth, documents, figures, quizzes, sections
 from .config import get_settings
 from .db import SessionLocal, create_tables, engine
 from .errors import AppError
-from .models import Document, DocumentEmbedding, FigureScan
+from .models import Document, DocumentEmbedding, DocumentFilePart, FigureScan
 from .ratelimit import get_redis
 from .services import documents as document_service
 from .services import jobs, providers, web_images
@@ -93,16 +93,20 @@ async def backfill_figures() -> None:
         async with SessionLocal() as session:
             docs = (
                 await session.execute(
-                    select(Document.id, Document.storage_path, FigureScan.status)
+                    select(Document.id, Document.storage_path, FigureScan.status, DocumentFilePart.part)
                     .outerjoin(FigureScan, FigureScan.document_id == Document.id)
+                    .outerjoin(
+                        DocumentFilePart,
+                        (DocumentFilePart.document_id == Document.id) & (DocumentFilePart.part == 0),
+                    )
                     .where(Document.status == "ready")
                 )
             ).all()
-        # Never scanned and the file is here, or interrupted mid-way (the job marks it failed
-        # if the file is gone, so the app stops waiting for it).
+        # Never scanned and the file is here (on disk or in the database), or interrupted mid-way
+        # by a restart (the job restores the file, or marks it failed if it's gone for good).
         ids = [
-            doc_id for doc_id, path, scan in docs
-            if scan == "processing" or (scan is None and Path(path).exists())
+            doc_id for doc_id, path, scan, copy in docs
+            if scan == "processing" or (scan is None and (copy is not None or Path(path).exists()))
         ]
         for document_id in ids:
             jobs.enqueue_figures(document_id)
