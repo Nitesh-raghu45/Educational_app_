@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import timing
 from ..config import get_settings
 from ..models import Document, DocumentChunk, DocumentFigure
 from . import providers
@@ -92,15 +93,22 @@ def reciprocal_rank_fusion(rankings: list[list[str]], k: int) -> dict[str, float
 async def _vector_search(
     user_id: uuid.UUID, document_ids: list[uuid.UUID], query: str, top_k: int, min_score: float
 ) -> list[Any]:
-    vector = await asyncio.to_thread(providers.embedder().embed_query, query)
-    matches = await asyncio.to_thread(
-        providers.vector_store().query,
-        providers.namespace_for(user_id),
-        vector,
-        top_k,
-        [str(d) for d in document_ids],
-    )
+    with timing.step("search: embed question"):
+        vector = await asyncio.to_thread(providers.embedder().embed_query, query)
+    with timing.step("search: pinecone"):
+        matches = await asyncio.to_thread(
+            providers.vector_store().query,
+            providers.namespace_for(user_id),
+            vector,
+            top_k,
+            [str(d) for d in document_ids],
+        )
     return sorted((m for m in matches if m.score >= min_score), key=lambda m: m.score, reverse=True)
+
+
+async def _timed(name: str, work):
+    with timing.step(name):
+        return await work
 
 
 async def retrieve(
@@ -124,7 +132,7 @@ async def retrieve(
     if settings.hybrid_search:
         dense, sparse = await asyncio.gather(
             _vector_search(user_id, document_ids, query, candidates, min_score),
-            keyword_search(session, user_id=user_id, document_ids=document_ids, query=query, top_k=candidates),
+            _timed("search: keyword", keyword_search(session, user_id=user_id, document_ids=document_ids, query=query, top_k=candidates)),
         )
     else:
         dense, sparse = await _vector_search(user_id, document_ids, query, candidates, min_score), []
@@ -136,7 +144,8 @@ async def retrieve(
     if not ranked:
         return []
 
-    chunks = await _load_chunks(session, user_id, document_ids, ranked)
+    with timing.step("search: load passages"):
+        chunks = await _load_chunks(session, user_id, document_ids, ranked)
     evidence = []
     for chunk_id in ranked:
         if chunk_id in chunks:

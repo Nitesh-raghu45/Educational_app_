@@ -6,6 +6,7 @@ disconnects mid-stream. Events go to `emit`, which the SSE endpoint forwards to 
 
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +15,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import timing
 from ..config import get_settings
 from ..db import SessionLocal
 from ..models import ChatMessage, ChatSection, Document, utcnow
@@ -236,6 +238,8 @@ class AnswerContext:
     question: str
     question_created_at: datetime
     document_ids: list[uuid.UUID]
+    # When the request arrived (perf_counter), so the timing log covers sign-in and saving too.
+    received_at: float | None = None
 
 
 async def _load_context(session: AsyncSession, assistant_message_id: uuid.UUID) -> AnswerContext:
@@ -264,20 +268,41 @@ async def _stream_answer(messages: list[dict[str, str]], effort: str, emit: Emit
     fallback = settings.groq_fallback_model
     can_fall_back = bool(fallback) and fallback != settings.groq_answer_model
     parts: list[str] = []
-    try:
-        async for delta in providers.llm().stream(
-            messages, model=settings.groq_answer_model, reasoning_effort=effort, retry=not can_fall_back
-        ):
+    timer = timing.current()
+    began = time.perf_counter()
+
+    async def relay(stream) -> None:
+        nonlocal began
+        async for delta in stream:
+            if not parts and timer:
+                # Groq queueing + reading the prompt + the model's reasoning, before its first word.
+                timer.steps["model thinking"] = time.perf_counter() - began
+                timer.mark_first_word()
+                began = time.perf_counter()
             parts.append(delta)
             await emit("token", {"text": delta})
+        if timer:
+            timer.steps["model writing"] = time.perf_counter() - began
+
+    model = settings.groq_answer_model
+    try:
+        await relay(providers.llm().stream(messages, model=model, reasoning_effort=effort, retry=not can_fall_back))
     except ModelBusy:
         if parts or not can_fall_back:
             raise
         logger.warning("%s is busy; answering with %s", settings.groq_answer_model, fallback)
-        async for delta in providers.llm().stream(messages, model=fallback, reasoning_effort=effort):
-            parts.append(delta)
-            await emit("token", {"text": delta})
-    return "".join(parts)
+        if timer:
+            timer.steps["busy model"] = time.perf_counter() - began
+        began = time.perf_counter()
+        model = fallback
+        await relay(providers.llm().stream(messages, model=fallback, reasoning_effort=effort))
+    answer = "".join(parts)
+    if timer:
+        timer.note("model", model)
+        timer.note("effort", effort)
+        timer.note("prompt_tokens~", sum(len(m["content"]) for m in messages) // 4)
+        timer.note("answer_tokens~", len(answer) // 4)
+    return answer
 
 
 async def generate_answer(assistant_message_id: uuid.UUID, emit: Emit, context: AnswerContext | None = None) -> None:
@@ -307,28 +332,38 @@ async def _generate(
     session: AsyncSession, assistant_message_id: uuid.UUID, emit: Emit, context: AnswerContext | None
 ) -> None:
     settings = get_settings()
+    timer = timing.start(context.received_at if context else None)
+    if context and context.received_at is not None:
+        # Sign-in check, rate limit and saving the question, before generation began.
+        timer.steps["request"] = time.perf_counter() - context.received_at
     # Everything before the first token is on the critical path, so it does as few database
     # round trips as possible: the answer stays "pending" until it is saved complete.
-    ctx = context or await _load_context(session, assistant_message_id)
+    with timer.step("load context"):
+        ctx = context or await _load_context(session, assistant_message_id)
 
     # The web picture search runs while history is loaded and the documents are searched, so it
     # adds no waiting. A standalone question can be searched at once; a follow-up ("show me a
     # picture of it") waits for the rewrite that says what "it" is.
     image_search = None if conversation.needs_rewrite(ctx.question) else web_images.start_search(ctx.question, ctx.question)
-    history = await conversation.recent_history(
-        session, ctx.section_id, before=ctx.question_created_at, limit=settings.history_window
-    )
-    query = await conversation.rewrite_query(ctx.summary, history, ctx.question)
+    with timer.step("history"):
+        history = await conversation.recent_history(
+            session, ctx.section_id, before=ctx.question_created_at, limit=settings.history_window
+        )
+    with timer.step("rewrite"):
+        query = await conversation.rewrite_query(ctx.summary, history, ctx.question)
+    timer.note("rewritten", query != ctx.question)
     if image_search is None:
         image_search = web_images.start_search(ctx.question, query)
-    evidence = await retrieve(
-        session,
-        user_id=ctx.user_id,
-        document_ids=ctx.document_ids,
-        query=query,
-        top_k=settings.retrieval_top_k,
-        min_score=settings.retrieval_min_score,
-    )
+    with timer.step("search"):
+        evidence = await retrieve(
+            session,
+            user_id=ctx.user_id,
+            document_ids=ctx.document_ids,
+            query=query,
+            top_k=settings.retrieval_top_k,
+            min_score=settings.retrieval_min_score,
+        )
+    timer.note("sources", len(evidence))
     if is_overview_question(ctx.question) or is_overview_question(query):
         # Questions about the document as a whole: also give the model each document's opening.
         seen = {e.chunk_id for e in evidence}
@@ -337,7 +372,8 @@ async def _generate(
         )
         evidence = (evidence + [e for e in opening if e.chunk_id not in seen])[: settings.retrieval_top_k]
 
-    images = await web_images.collect(image_search)
+    with timer.step("web pictures wait"):
+        images = await web_images.collect(image_search)
 
     if not evidence:
         # No supporting evidence: answer with a fixed refusal instead of letting the model guess.
@@ -356,23 +392,28 @@ async def _generate(
             await emit("token", {"text": extra})
         citations = extract_citations(answer, evidence) + web_image_citations(answer, images)
 
-    if note := await document_pictures_note(session, ctx.document_ids, ctx.question, answer):
-        answer += note
-        await emit("token", {"text": note})
+    with timer.step("finish and save"):
+        if note := await document_pictures_note(session, ctx.document_ids, ctx.question, answer):
+            answer += note
+            await emit("token", {"text": note})
 
-    await emit("citations", {"citations": citations})
-    await session.execute(
-        update(ChatMessage)
-        .where(ChatMessage.id == assistant_message_id)
-        .values(content=answer, citations=citations, status="completed", error=None, updated_at=utcnow())
-    )
-    await session.commit()
+        await emit("citations", {"citations": citations})
+        await session.execute(
+            update(ChatMessage)
+            .where(ChatMessage.id == assistant_message_id)
+            .values(content=answer, citations=citations, status="completed", error=None, updated_at=utcnow())
+        )
+        await session.commit()
     await emit("done", {"assistant_message_id": str(assistant_message_id), "status": "completed"})
+    logger.info("Answer timing: %s", timer.report())
 
     try:
         section = await session.get(ChatSection, ctx.section_id)
         if section is not None:
+            began = time.perf_counter()
             await conversation.update_summary(session, section)
+            # After the answer, so nobody waits for it, but it still uses Groq tokens.
+            logger.info("Summary update after answer: %.2fs", time.perf_counter() - began)
     except Exception:
         logger.warning("Summary update failed for section %s", ctx.section_id, exc_info=True)
         await session.rollback()

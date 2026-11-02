@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import timing
 from ..config import get_settings
 from ..db import get_session
 from ..errors import AppError
@@ -89,6 +90,7 @@ async def list_messages(
 async def post_message(
     section_id: uuid.UUID,
     body: MessageCreate,
+    started: float = Depends(timing.now),  # first, so the timing includes sign-in checks
     user: User = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
@@ -115,6 +117,7 @@ async def post_message(
         question=sub.user_message.content,
         question_created_at=sub.user_message.created_at,
         document_ids=sub.document_ids or [],
+        received_at=started,
     )
     return stream_response(start, start_generation(sub.assistant_message.id, context))
 
