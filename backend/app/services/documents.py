@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import storage
 from ..config import get_settings
 from ..errors import AppError
-from ..models import Document, DocumentChunk, DocumentHash, FigureScan, SectionDocument
+from ..models import Document, DocumentChunk, DocumentFigure, DocumentHash, FigureImage, FigureScan, SectionDocument
 from . import figures, providers, usage
 from .sections import get_owned_section
 
@@ -133,16 +133,30 @@ async def _reuse(
         # The server lost its copy (e.g. a restart on Render): keep this one, so figures and
         # re-embedding can use it again.
         doc.storage_path = str(new_path)
-    # Figures never extracted (uploaded before figure extraction existed) or extraction failed:
-    # now that the file is here again, extract them.
+    # Figures never extracted (uploaded before figure extraction existed), extraction failed, or
+    # their images were lost (kept on a disk a restart wiped): now that the file is here, extract them.
     scan = await session.get(FigureScan, doc.id)
-    extract = doc.status == "ready" and get_settings().figures_enabled and (scan is None or scan.status == "failed")
+    extract = (
+        doc.status == "ready"
+        and get_settings().figures_enabled
+        and (scan is None or scan.status == "failed" or await _figure_images_missing(session, doc.id))
+    )
     if extract:
         await figures.mark_processing(session, doc.id)
     await session.commit()
     await session.refresh(doc)
     doc = (await with_figure_counts(session, [doc]))[0]
     return UploadResult(doc, "already_in_chat" if already else "existing", extract)
+
+
+async def _figure_images_missing(session: AsyncSession, document_id: uuid.UUID) -> bool:
+    missing = await session.scalar(
+        select(DocumentFigure.id)
+        .outerjoin(FigureImage, FigureImage.storage_key == DocumentFigure.storage_key)
+        .where(DocumentFigure.document_id == document_id, FigureImage.storage_key.is_(None))
+        .limit(1)
+    )
+    return missing is not None
 
 
 async def backfill_hashes() -> None:

@@ -7,17 +7,19 @@ from pathlib import Path
 from sqlalchemy import delete, func, select
 
 from app.db import SessionLocal
-from app.models import Document, DocumentHash, FigureScan
+from app.models import Document, DocumentFigure, DocumentHash, FigureImage, FigureScan
 from app.services import documents, jobs
 
 from .conftest import register
 from .test_chat import DOC, new_section, upload_ready_doc
+from .test_figures import diagram, png_bytes, upload_image, vision  # noqa: F401  (vision is a fixture)
 
 
 async def upload(client, headers, section_id, text=DOC, name="biology.txt"):
+    file = (name, png_bytes(diagram()), "image/png") if text is None else (name, text.encode(), "text/plain")
     response = await client.post(
         "/api/v1/documents",
-        files={"file": (name, text.encode(), "text/plain")},
+        files={"file": file},
         data={"section_id": section_id},
         headers=headers,
     )
@@ -96,6 +98,24 @@ async def test_reupload_restores_a_lost_file_and_extracts_its_figures(client):
         assert (await session.get(FigureScan, doc_id)).status == "done"
         assert await session.get(DocumentHash, doc_id) is not None  # recognised by content next time
     assert await document_count() == 1
+
+
+async def test_reupload_restores_lost_figure_images(client, vision, monkeypatch):
+    """Figures whose images were lost (kept on a disk a restart wiped, before images moved to
+    the database) are extracted again when the same file is uploaded again."""
+    headers = await register(client)
+    section_id = await new_section(client, headers)
+    doc_id = await upload_image(client, headers, section_id, monkeypatch)
+    async with SessionLocal() as session:
+        await session.execute(delete(FigureImage).where(FigureImage.document_id == doc_id))
+        await session.commit()
+
+    again = await upload(client, headers, section_id, text=None, name="water-cycle.png")
+    assert again["id"] == str(doc_id) and again["figure_status"] == "processing"
+    async with SessionLocal() as session:
+        figure = await session.scalar(select(DocumentFigure).where(DocumentFigure.document_id == doc_id))
+        assert await session.get(FigureImage, figure.storage_key) is not None
+    assert (await client.get(f"/api/v1/figures/{figure.id}", headers=headers)).status_code == 200
 
 
 async def test_failed_documents_are_processed_again(client):
