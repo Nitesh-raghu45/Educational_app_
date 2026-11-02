@@ -4,6 +4,8 @@ pydantic-settings==2.7.0
 python-multipart==0.0.20
 SQLAlchemy[asyncio]==2.0.55
 aiomysql==0.2.0
+# aiomysql 0.2.0 breaks with PyMySQL 1.2+ when saving bytes (files, images to MySQL).
+PyMySQL==1.1.3
 cryptography==44.0.0
 redis==5.2.1
 arq==0.26.1
