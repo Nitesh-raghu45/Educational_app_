@@ -1,5 +1,6 @@
 import asyncio
 import random
+from collections import OrderedDict
 import re
 import uuid
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import timing
 from ..config import get_settings
 from ..models import Document, DocumentChunk, DocumentFigure
-from . import providers
+from . import conversation, providers
 from .figures import FIGURE_CHUNK_BASE
 from .keyword import keyword_search
 
@@ -90,11 +91,38 @@ def reciprocal_rank_fusion(rankings: list[list[str]], k: int) -> dict[str, float
     return fused
 
 
+# Question embeddings started while the request saves the question (see prefetch_embedding),
+# by question text. The answer takes its entry moments later; the size cap drops strays.
+_prefetched: OrderedDict[str, asyncio.Future] = OrderedDict()
+_PREFETCH_MAX = 32
+
+
+def prefetch_embedding(question: str) -> None:
+    """Start embedding a question now. Follow-ups that get rewritten are embedded later instead,
+    since the rewritten text is what is searched."""
+    if conversation.needs_rewrite(question) or question in _prefetched:
+        return
+    future = asyncio.ensure_future(asyncio.to_thread(providers.embedder().embed_query, question))
+    future.add_done_callback(lambda f: f.cancelled() or f.exception())  # never "exception not retrieved"
+    _prefetched[question] = future
+    while len(_prefetched) > _PREFETCH_MAX:
+        _prefetched.popitem(last=False)
+
+
+async def _embed_query(query: str) -> list[float]:
+    if (future := _prefetched.pop(query, None)) is not None:
+        try:
+            return await future
+        except Exception:
+            pass  # embed it again below
+    return await asyncio.to_thread(providers.embedder().embed_query, query)
+
+
 async def _vector_search(
     user_id: uuid.UUID, document_ids: list[uuid.UUID], query: str, top_k: int, min_score: float
 ) -> list[Any]:
     with timing.step("search: embed question"):
-        vector = await asyncio.to_thread(providers.embedder().embed_query, query)
+        vector = await _embed_query(query)
     with timing.step("search: pinecone"):
         matches = await asyncio.to_thread(
             providers.vector_store().query,

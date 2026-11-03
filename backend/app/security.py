@@ -33,6 +33,22 @@ def create_access_token(user_id: uuid.UUID) -> str:
     return jwt.encode({"sub": str(user_id), "exp": expires}, settings.jwt_secret, algorithm="HS256")
 
 
+def current_user_id(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> uuid.UUID:
+    """The signed-in user's id from the token alone, with no database lookup. Only for endpoints
+    that then load something owned by this id (which proves the account still exists)."""
+    if credentials is None:
+        raise AppError(401, "UNAUTHENTICATED", "Sign in to continue.")
+    return _user_id_from(credentials.credentials)
+
+
+def _user_id_from(token: str) -> uuid.UUID:
+    try:
+        payload = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])
+        return uuid.UUID(payload["sub"])
+    except (jwt.PyJWTError, KeyError, ValueError):
+        raise AppError(401, "UNAUTHENTICATED", "Sign in to continue.")
+
+
 async def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     session: AsyncSession = Depends(get_session),
@@ -40,12 +56,7 @@ async def current_user(
     unauthenticated = AppError(401, "UNAUTHENTICATED", "Sign in to continue.")
     if credentials is None:
         raise unauthenticated
-    try:
-        payload = jwt.decode(credentials.credentials, get_settings().jwt_secret, algorithms=["HS256"])
-        user_id = uuid.UUID(payload["sub"])
-    except (jwt.PyJWTError, KeyError, ValueError):
-        raise unauthenticated
-    user = await session.get(User, user_id)
+    user = await session.get(User, _user_id_from(credentials.credentials))
     if user is None:
         raise unauthenticated
     return user

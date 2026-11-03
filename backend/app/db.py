@@ -1,7 +1,9 @@
 import logging
 import ssl
+import time
 from collections.abc import AsyncIterator
 
+from sqlalchemy import event, exc
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -60,7 +62,31 @@ def _connect_args(url: URL, ssl_mode: str | None) -> dict:
 
 
 _url, _ssl_mode = normalize_database_url(get_settings().database_url)
-engine = create_async_engine(_url, pool_pre_ping=True, pool_recycle=1800, connect_args=_connect_args(_url, _ssl_mode))
+engine = create_async_engine(_url, pool_recycle=1800, connect_args=_connect_args(_url, _ssl_mode))
+
+# pool_pre_ping would check every pooled connection before each use: a full round trip, which
+# costs ~0.4 s when the database is in another region (and a question uses the pool twice).
+# Only connections idle for a while, the ones a network drop may have closed, are checked.
+IDLE_PING_SECONDS = 60
+
+
+@event.listens_for(engine.sync_engine, "connect")
+@event.listens_for(engine.sync_engine, "checkin")
+def _note_last_use(dbapi_connection, connection_record) -> None:
+    connection_record.info["last_used"] = time.monotonic()
+
+
+@event.listens_for(engine.sync_engine, "checkout")
+def _ping_if_idle(dbapi_connection, connection_record, connection_proxy) -> None:
+    if time.monotonic() - connection_record.info.get("last_used", 0.0) < IDLE_PING_SECONDS:
+        return
+    try:
+        alive = engine.dialect.do_ping(dbapi_connection)
+    except Exception as error:
+        raise exc.DisconnectionError() from error  # the pool replaces it with a fresh connection
+    if not alive:
+        raise exc.DisconnectionError()
+
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

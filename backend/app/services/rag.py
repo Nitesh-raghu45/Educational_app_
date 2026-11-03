@@ -4,6 +4,7 @@ Runs in its own DB session as a background task, so the answer is still saved if
 disconnects mid-stream. Events go to `emit`, which the SSE endpoint forwards to the client.
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -345,12 +346,22 @@ async def _generate(
     # adds no waiting. A standalone question can be searched at once; a follow-up ("show me a
     # picture of it") waits for the rewrite that says what "it" is.
     image_search = None if conversation.needs_rewrite(ctx.question) else web_images.start_search(ctx.question, ctx.question)
-    with timer.step("history"):
-        history = await conversation.recent_history(
-            session, ctx.section_id, before=ctx.question_created_at, limit=settings.history_window
-        )
-    with timer.step("rewrite"):
-        query = await conversation.rewrite_query(ctx.summary, history, ctx.question)
+    async def load_history():
+        # In its own session, so it can run while this one searches.
+        async with SessionLocal() as own:
+            with timer.step("history"):
+                return await conversation.recent_history(
+                    own, ctx.section_id, before=ctx.question_created_at, limit=settings.history_window
+                )
+
+    history_task = asyncio.ensure_future(load_history())
+    if conversation.needs_rewrite(ctx.question):
+        # A follow-up ("explain it more") needs the history to know what to search for.
+        history = await history_task
+        with timer.step("rewrite"):
+            query = await conversation.rewrite_query(ctx.summary, history, ctx.question)
+    else:
+        query = ctx.question  # searched at once, while the history loads
     timer.note("rewritten", query != ctx.question)
     if image_search is None:
         image_search = web_images.start_search(ctx.question, query)
@@ -374,6 +385,7 @@ async def _generate(
 
     with timer.step("web pictures wait"):
         images = await web_images.collect(image_search)
+    history = await history_task
 
     if not evidence:
         # No supporting evidence: answer with a fixed refusal instead of letting the model guess.

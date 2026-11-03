@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import and_, delete, insert, or_, select, update
+from sqlalchemy import and_, case, delete, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -163,11 +163,23 @@ async def submit_question(
             return existing
         raise error
 
+    # The section and its ready documents in one round trip. The section belonging to this user
+    # also proves the account exists, so the request needs no separate sign-in lookup.
+    rows = (
+        await session.execute(
+            select(ChatSection, Document.id)
+            .outerjoin(SectionDocument, SectionDocument.section_id == ChatSection.id)
+            .outerjoin(Document, (Document.id == SectionDocument.document_id) & (Document.status == "ready"))
+            .where(ChatSection.id == section_id, ChatSection.user_id == user_id)
+        )
+    ).all()
+    if not rows:
+        raise section_not_found()
+    section = rows[0][0]
+    document_ids = [document_id for _, document_id in rows if document_id is not None]
     # Friendly pre-checks; the conditional UPDATE below is what actually enforces the limit.
-    section = await get_owned_section(session, section_id, user_id)
     if section.status != "active" or section.question_count >= section.max_questions:
         return await replay_or_raise(_closed_error(section))
-    document_ids = await ready_document_ids(session, section_id)
     if not document_ids:
         raise AppError(
             409, "NO_READY_DOCUMENTS", "Upload or attach at least one processed document to this chat first."
@@ -181,6 +193,7 @@ async def submit_question(
         return await replay_or_raise(error)
 
     now = utcnow()
+    title = _title_from(content)
     result = await session.execute(
         update(ChatSection)
         .where(
@@ -189,19 +202,34 @@ async def submit_question(
             ChatSection.status == "active",
             ChatSection.question_count < ChatSection.max_questions,
         )
-        .values(question_count=ChatSection.question_count + 1, updated_at=now)
+        # In this order: MySQL evaluates SET left to right, so status must read the old count.
+        .ordered_values(
+            (
+                ChatSection.status,
+                case((ChatSection.question_count + 1 >= ChatSection.max_questions, "limit_reached"), else_=ChatSection.status),
+            ),
+            (
+                ChatSection.title,
+                case((or_(ChatSection.title.is_(None), ChatSection.title == ""), title), else_=ChatSection.title),
+            ),
+            (ChatSection.question_count, ChatSection.question_count + 1),
+            (ChatSection.updated_at, now),
+        )
         .execution_options(synchronize_session=False)
     )
     if result.rowcount != 1:
         await session.rollback()
         return await replay_or_raise(_closed_error(await get_owned_section(session, section_id, user_id)))
 
-    # Our UPDATE holds the row lock until commit, so this read is consistent.
-    await session.refresh(section)
+    # Mirror the UPDATE on the loaded section instead of reading it back (one round trip fewer);
+    # detached first, so these changes aren't written again.
+    session.expunge(section)
+    section.question_count += 1
+    section.updated_at = now
     if section.question_count >= section.max_questions:
         section.status = "limit_reached"
     if not section.title:
-        section.title = _title_from(content)
+        section.title = title
 
     question_row = dict(
         id=uuid.uuid4(),

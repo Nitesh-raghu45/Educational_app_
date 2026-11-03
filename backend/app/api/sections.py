@@ -21,8 +21,8 @@ from ..schemas import (
     SectionOut,
     SectionUpdate,
 )
-from ..security import current_user
-from ..services import documents, quiz, rag, sections
+from ..security import current_user, current_user_id
+from ..services import documents, quiz, rag, retrieval, sections
 from .quizzes import quiz_out
 from .streaming import replay_response, start_generation, stream_response
 
@@ -91,13 +91,16 @@ async def post_message(
     section_id: uuid.UUID,
     body: MessageCreate,
     started: float = Depends(timing.now),  # first, so the timing includes sign-in checks
-    user: User = Depends(current_user),
+    user_id: uuid.UUID = Depends(current_user_id),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """Submit a question and stream the answer as SSE: message_start, token*, citations, done | error."""
-    await enforce_rate_limit(user.id, "messages", get_settings().rate_limit_per_minute)
+    # Embedding the question starts now, while the question is saved (both take a while on
+    # small servers with a distant database), unless it is a follow-up that gets rewritten first.
+    retrieval.prefetch_embedding(body.content)
+    await enforce_rate_limit(user_id, "messages", get_settings().rate_limit_per_minute)
     sub = await sections.submit_question(
-        session, section_id=section_id, user_id=user.id, content=body.content, idempotency_key=body.client_message_id
+        session, section_id=section_id, user_id=user_id, content=body.content, idempotency_key=body.client_message_id
     )
     start = _start_payload(sub.section, sub.user_message, sub.assistant_message)
     if sub.replayed:
