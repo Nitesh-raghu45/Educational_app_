@@ -4,6 +4,9 @@ A ChatGPT-style study app. Students upload their own documents, then ask questio
 **sections**. Answers stream in and come only from those documents, with citations. Each
 section accepts **30 questions**. After that it becomes read-only and the student starts a new chat.
 
+New to the code? [explain.md](explain.md) walks through the architecture and what every
+folder, file and function does.
+
 | Layer | Tech |
 |---|---|
 | Frontend | React 18 + TypeScript (Vite): sidebar, streaming chat, documents panel, quizzes |
