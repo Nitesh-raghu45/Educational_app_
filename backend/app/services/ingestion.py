@@ -223,7 +223,7 @@ async def ingest_document(document_id: uuid.UUID) -> None:
         doc.status, doc.error, doc.updated_at = "processing", None, utcnow()
         await session.commit()
         timer.lap("start")
-        namespace = providers.namespace_for(doc.user_id)
+        namespace = providers.namespace_for()
         details = f"{doc.filename!r}, {doc.size_bytes // 1024} KB"
         try:
             if not await stored_files.ensure_local(session, doc):
@@ -256,11 +256,7 @@ async def ingest_document(document_id: uuid.UUID) -> None:
                 for i, c in enumerate(chunks)
             ]
             items = [
-                (
-                    row.id,
-                    vector,
-                    {"document_id": str(doc.id), "chunk_index": row.chunk_index, "page": row.page or 0},
-                )
+                (row.id, vector, providers.vector_metadata(doc.user_id, doc.id, row.chunk_index, row.page))
                 for row, vector in zip(rows, vectors)
             ]
             await asyncio.to_thread(providers.vector_store().upsert, namespace, items)
@@ -316,10 +312,10 @@ async def reembed_document(document_id: uuid.UUID) -> None:
             vectors = await asyncio.to_thread(providers.embedder().embed_documents, [c.text for c in chunks])
             timer.lap("embed")
             items = [
-                (c.id, v, {"document_id": str(doc.id), "chunk_index": c.chunk_index, "page": c.page or 0})
+                (c.id, v, providers.vector_metadata(doc.user_id, doc.id, c.chunk_index, c.page))
                 for c, v in zip(chunks, vectors)
             ]
-            await asyncio.to_thread(providers.vector_store().upsert, providers.namespace_for(doc.user_id), items)
+            await asyncio.to_thread(providers.vector_store().upsert, providers.namespace_for(), items)
             timer.lap("pinecone")
             await _record_embedding_model(session, doc.id, settings.embedding_model)
             await session.commit()

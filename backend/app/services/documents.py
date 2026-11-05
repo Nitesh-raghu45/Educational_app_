@@ -237,7 +237,7 @@ async def delete_document(session: AsyncSession, document_id: uuid.UUID, user_id
     await figures.clear_figures(session, doc)
     chunk_ids = list(await session.scalars(select(DocumentChunk.id).where(DocumentChunk.document_id == doc.id)))
     if chunk_ids:
-        await asyncio.to_thread(providers.vector_store().delete, providers.namespace_for(user_id), chunk_ids)
+        await asyncio.to_thread(providers.vector_store().delete, providers.namespace_for(), chunk_ids)
     await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc.id))
     await session.execute(delete(SectionDocument).where(SectionDocument.document_id == doc.id))
     await session.execute(delete(FigureScan).where(FigureScan.document_id == doc.id))

@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     pinecone_region: str = "us-east-1"
 
     # Multilingual (50+ languages incl. Hindi/Hinglish). Changing the model re-embeds existing
-    # documents automatically at startup, into a separate Pinecone namespace per model.
+    # documents automatically at startup, into a separate (shared) Pinecone namespace per model.
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_dim: int = 384
     # Where the ONNX model is downloaded to (baked into the Docker image at /models).

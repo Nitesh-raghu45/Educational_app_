@@ -17,7 +17,9 @@ class Embedder(Protocol):
 
 class VectorStore(Protocol):
     def upsert(self, namespace: str, items: list[tuple[str, list[float], dict[str, Any]]]) -> None: ...
-    def query(self, namespace: str, vector: list[float], top_k: int, document_ids: list[str]) -> list[Any]: ...
+    def query(
+        self, namespace: str, vector: list[float], top_k: int, user_id: str, document_ids: list[str]
+    ) -> list[Any]: ...
     def delete(self, namespace: str, ids: list[str]) -> None: ...
 
 
@@ -84,16 +86,27 @@ def override(
     _embedder, _store, _llm, _vision = embedder, store, llm, vision
 
 
-# Vectors made by this model live in the original namespace names, so they stay usable if the
-# model is switched back.
+# The embedding model used before model tracking existed. Documents embedded before then are
+# counted as made with it (see main.reembed_outdated_documents).
 LEGACY_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def namespace_for(user_id: Any, model: str | None = None) -> str:
-    """Each student's vectors live in their own Pinecone namespace, one per embedding model:
-    vectors from different models can't be compared, so they must never be searched together."""
-    model = model or get_settings().embedding_model
-    if model == LEGACY_EMBEDDING_MODEL:
-        return f"user-{user_id}"
-    slug = re.sub(r"[^a-z0-9]+", "-", model.split("/")[-1].lower()).strip("-")
-    return f"user-{user_id}--{slug}"
+def model_slug(model: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", model.split("/")[-1].lower()).strip("-")
+
+
+def namespace_for(model: str | None = None) -> str:
+    """All students share one Pinecone namespace per embedding model (vectors from different
+    models can't be compared, so they must never be searched together). Each vector carries its
+    owner's user_id, and every search filters on it, so students still only see their own
+    documents. One namespace per student would hit Pinecone's free-plan cap of 100 namespaces."""
+    return shared_namespace(model_slug(model or get_settings().embedding_model))
+
+
+def shared_namespace(slug: str) -> str:
+    return f"docs--{slug}"
+
+
+def vector_metadata(user_id: Any, document_id: Any, chunk_index: int, page: int | None) -> dict[str, Any]:
+    """Metadata stored with every vector. user_id scopes searches to the vector's owner."""
+    return {"user_id": str(user_id), "document_id": str(document_id), "chunk_index": chunk_index, "page": page or 0}

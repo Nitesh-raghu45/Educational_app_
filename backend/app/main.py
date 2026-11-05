@@ -48,12 +48,27 @@ async def lifespan(app: FastAPI):
     # first upload or question after a (re)start wait 10-20 s for them.
     jobs.spawn(warm_up())
     jobs.spawn(resume_unfinished_ingestion())
+    jobs.spawn(move_vectors_to_shared_namespace())
     jobs.spawn(reembed_outdated_documents())
     jobs.spawn(backfill_figures())
     jobs.spawn(document_service.backfill_hashes())
     jobs.spawn(web_images.warm_up())
     yield
     await engine.dispose()
+
+
+async def move_vectors_to_shared_namespace() -> None:
+    """Vectors used to live in one Pinecone namespace per student; move any left there into the
+    shared namespace (see providers.namespace_for). Until moved, they answer by keyword search."""
+    migrate = getattr(providers.vector_store(), "migrate_user_namespaces", None)
+    if migrate is None:
+        return
+    try:
+        moved = await asyncio.to_thread(migrate)
+        if moved:
+            logger.info("Moved %d vector(s) into the shared Pinecone namespace", moved)
+    except Exception:
+        logger.warning("Could not move vectors into the shared Pinecone namespace", exc_info=True)
 
 
 async def reembed_outdated_documents() -> None:

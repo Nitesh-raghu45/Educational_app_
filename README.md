@@ -12,7 +12,7 @@ folder, file and function does.
 | Frontend | React 18 + TypeScript (Vite): sidebar, streaming chat, documents panel, quizzes |
 | API | FastAPI (stateless, so you can run several replicas) |
 | Database | **MariaDB**: users, sections, messages, quotas, documents, chunk text, quizzes |
-| Vector DB | **Pinecone** serverless index (384-dim, cosine), one namespace per student |
+| Vector DB | **Pinecone** serverless index (384-dim, cosine), one shared namespace; each vector tagged with its owner's `user_id` |
 | Embeddings | **paraphrase-multilingual-MiniLM-L12-v2** (50+ languages incl. Hindi), run locally on CPU with ONNX Runtime (no PyTorch) |
 | LLM | **Groq**: `openai/gpt-oss-120b` for answers and quizzes, `openai/gpt-oss-20b` for query rewriting and summaries (reasoning hidden from students) |
 | Queue / cache | Redis: arq ingestion queue and per-user rate limits |
@@ -163,7 +163,7 @@ stream with `fetch()` because `EventSource` can't send a POST body or an `Author
 1. Load the last 8 completed messages and the section's rolling summary.
 2. Rewrite follow-ups ("explain that again") into a standalone query with the fast Groq model.
 3. **Hybrid search**, run in parallel:
-   - Vector search: embed the query with multilingual MiniLM and query Pinecone in the student's namespace, filtered to `document_id ∈ section's ready documents`. Matches below `RETRIEVAL_MIN_SCORE` are dropped.
+   - Vector search: embed the query with multilingual MiniLM and query Pinecone's shared namespace, filtered to the student's `user_id` and `document_id ∈ section's ready documents`. Matches below `RETRIEVAL_MIN_SCORE` are dropped.
    - Keyword search: BM25 over the stored chunk text ([services/keyword.py](backend/app/services/keyword.py)), with stopwords removed and words stemmed. A chunk must share at least 2 query terms (1 for a one-word query). Term statistics are cached per document.
 4. Merge both lists with reciprocal rank fusion (RRF) and keep the top `RETRIEVAL_TOP_K`. Load chunk text from the database, which re-checks ownership. Each citation records `matched_by`: `vector`, `keyword` or `both`.
 5. **Evidence gate:** with no evidence, the app returns a fixed "couldn't find it in your documents" answer and never calls the LLM.
@@ -190,6 +190,10 @@ and polls `GET /documents/{id}/status`.
   (120) of the model's tokens, within its 128-token limit, so no chunk is cut off when embedded. Chunks
   share up to `CHUNK_OVERLAP_TOKENS` (20) of whole sentences. PDFs are chunked page by page, so citations
   keep their page numbers.
+- **Pinecone namespaces:** all students share one namespace per embedding model (the free plan allows
+  only 100 namespaces per index). Every vector stores its owner's `user_id` and every search filters on
+  it. Vectors left in the old per-student `user-<id>` namespaces are moved into the shared one at
+  startup, without re-embedding.
 - **Changing the embedding model:** each model has its own Pinecone namespace, and
   `document_embeddings` records which model each document used. At startup, documents embedded with
   another model are re-embedded in the background: from the file if it is still on disk, otherwise from

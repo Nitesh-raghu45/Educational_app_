@@ -292,7 +292,7 @@ async def clear_figures(session: AsyncSession, document: Document) -> None:
     if not figures:
         return
     chunk_ids = [f.chunk_id for f in figures]
-    await asyncio.to_thread(providers.vector_store().delete, providers.namespace_for(document.user_id), chunk_ids)
+    await asyncio.to_thread(providers.vector_store().delete, providers.namespace_for(), chunk_ids)
     await session.execute(delete(FigureImage).where(FigureImage.document_id == document.id))
     await session.execute(delete(DocumentFigure).where(DocumentFigure.document_id == document.id))
     await session.execute(delete(DocumentChunk).where(DocumentChunk.id.in_(chunk_ids)))
@@ -376,10 +376,10 @@ async def process_document(document_id: uuid.UUID) -> None:
             if chunks:
                 vectors = await asyncio.to_thread(providers.embedder().embed_documents, [c.text for c in chunks])
                 items = [
-                    (c.id, v, {"document_id": str(doc.id), "chunk_index": c.chunk_index, "page": c.page or 0})
+                    (c.id, v, providers.vector_metadata(doc.user_id, doc.id, c.chunk_index, c.page))
                     for c, v in zip(chunks, vectors)
                 ]
-                await asyncio.to_thread(providers.vector_store().upsert, providers.namespace_for(doc.user_id), items)
+                await asyncio.to_thread(providers.vector_store().upsert, providers.namespace_for(), items)
                 session.add_all(chunks)
                 session.add_all(rows)
                 session.add_all(images)

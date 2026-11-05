@@ -42,12 +42,11 @@ def test_prompt_tells_model_sources_are_data_and_to_answer_in_students_language(
 # ---------- model-versioned vectors ----------
 
 
-def test_each_embedding_model_gets_its_own_namespace():
-    uid = uuid.uuid4()
-    assert providers.namespace_for(uid, providers.LEGACY_EMBEDDING_MODEL) == f"user-{uid}"
+def test_each_embedding_model_gets_its_own_shared_namespace():
+    assert providers.namespace_for(providers.LEGACY_EMBEDDING_MODEL) == "docs--all-minilm-l6-v2"
     assert (
-        providers.namespace_for(uid, "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-        == f"user-{uid}--paraphrase-multilingual-minilm-l12-v2"
+        providers.namespace_for("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        == "docs--paraphrase-multilingual-minilm-l12-v2"
     )
 
 
@@ -188,7 +187,8 @@ async def test_documents_are_reembedded_when_the_model_changes(client, monkeypat
         models = list(await session.scalars(select(DocumentEmbedding.model).where(DocumentEmbedding.document_id == doc_id)))
         status = (await session.get(Document, doc_id)).status
     assert models == ["example/another-model"] and status == "ready"
-    assert store.namespaces.get(providers.namespace_for(user_id, "example/another-model"))
+    moved = store.namespaces.get(providers.namespace_for("example/another-model"))
+    assert moved and all(meta["user_id"] == str(user_id) for _, meta in moved.values())
 
 
 async def test_untracked_documents_count_as_legacy_model(client, monkeypatch):
@@ -205,3 +205,18 @@ async def test_untracked_documents_count_as_legacy_model(client, monkeypatch):
     async with SessionLocal() as session:
         models = list(await session.scalars(select(DocumentEmbedding.model).where(DocumentEmbedding.document_id == doc_id)))
     assert models == [providers.LEGACY_EMBEDDING_MODEL]
+
+
+async def test_students_share_one_namespace_but_only_find_their_own_documents(client):
+    from app.services.retrieval import _vector_search
+
+    alice, bob = await register(client, "alice@example.com"), await register(client, "bob@example.com")
+    alice_doc = uuid.UUID(await upload_ready_doc(client, alice, await new_section(client, alice)))
+    bob_doc = uuid.UUID(await upload_ready_doc(client, bob, await new_section(client, bob)))
+    assert list(providers.vector_store().namespaces) == [providers.namespace_for()]
+
+    async with SessionLocal() as session:
+        bob_id = (await session.get(Document, bob_doc)).user_id
+    # Even a search that named Alice's document finds only Bob's vectors: user_id filters them.
+    matches = await _vector_search(bob_id, [alice_doc, bob_doc], "photosynthesis chlorophyll", 10, 0.0)
+    assert matches and {m.metadata["document_id"] for m in matches} == {str(bob_doc)}

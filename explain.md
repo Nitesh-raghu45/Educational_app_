@@ -192,6 +192,7 @@ Functions starting with `_` are private helpers used only inside their file.
 | `redis_status` | Reports whether Redis is connected, disabled or unreachable. |
 | `warm_up` | Loads the embedding model and opens Pinecone early, so the first upload/question isn't slow. |
 | `resume_unfinished_ingestion` | Restarts document processing that a server restart interrupted. |
+| `move_vectors_to_shared_namespace` | Moves vectors still in old per-student Pinecone namespaces into the shared one (runs `PineconeStore.migrate_user_namespaces`). |
 | `reembed_outdated_documents` | If the embedding model changed, re-embeds documents made with the old one. |
 | `backfill_figures` | Extracts figures for documents that never had them, or whose extraction was interrupted. |
 | `UnhandledErrorMiddleware` | Turns any crash into a clean JSON "500" response (with CORS headers, so the website can read it). |
@@ -359,13 +360,16 @@ Render's free plan wipes the disk on restart, so each upload is also stored in t
 
 #### `vectorstore.py`: Pinecone
 `PineconeStore` wraps the Pinecone index: `upsert` (save vectors), `query` (find similar vectors,
-filtered to the chat's documents), `delete`. Every call has a timeout and retries. `Match` is one
+filtered to the student's `user_id` and the chat's documents), `delete`. Every call has a timeout and
+retries. `migrate_user_namespaces` copies vectors from the old one-namespace-per-student layout into
+the shared namespace (adding `user_id`, no re-embedding) and deletes the old namespaces. `Match` is one
 search result. `_is_ready` checks a newly created index is ready.
 
 #### `providers.py`: which clients to use
 `embedder()`, `vector_store()`, `llm()`, `vision()` return the shared clients; tests swap in fakes
-with `override()`. `namespace_for(user_id)` gives each student their own private Pinecone
-namespace (per embedding model). `Embedder`, `VectorStore`, `LLM`, `Vision` describe what each
+with `override()`. `namespace_for()` names the Pinecone namespace all students share (one per
+embedding model); `vector_metadata()` builds the metadata stored with each vector, including the
+owner's `user_id`, which every search filters on so students only find their own documents. `Embedder`, `VectorStore`, `LLM`, `Vision` describe what each
 client must provide.
 
 #### `keyword.py`: keyword search (BM25)
@@ -600,7 +604,7 @@ Frontend: `cd frontend && npm test`.
 | `test_model_fallback.py` | Switching to the fallback model when Groq is busy. |
 | `test_latency_budget.py`, `test_answer_latency.py` | Number of database round trips per question; idle-only pings; early embedding. |
 | `test_database_url.py`, `test_mysql_driver.py` | Aiven URL handling; the MySQL driver can save bytes. |
-| `test_vectorstore.py` | Pinecone calls use timeouts, small batches and retries. |
+| `test_vectorstore.py` | Pinecone calls use timeouts, small batches and retries; searches filter by `user_id`; old per-student namespaces are moved into the shared one. |
 | `test_errors.py` | Crashes return readable JSON (with CORS); streaming still works through the error middleware. |
 
 ---
@@ -635,7 +639,7 @@ website (nginx serves the site and forwards `/api` to the API).
 | **RAG** | Retrieve relevant passages, then generate an answer from only them. |
 | **Chunk** | A small piece of a document (about 120 tokens, roughly 90 words) that is searched and cited. |
 | **Embedding / vector** | A list of numbers representing a text's meaning; similar meanings → similar numbers. |
-| **Pinecone namespace** | A private partition of the vector index; one per student. |
+| **Pinecone namespace** | A partition of the vector index; one shared by all students per embedding model (searches filter by `user_id`). |
 | **BM25** | Classic keyword-matching score. |
 | **RRF** | Reciprocal Rank Fusion: merges several ranked lists into one. |
 | **SSE** | Server-Sent Events: the server pushes the answer to the browser piece by piece. |

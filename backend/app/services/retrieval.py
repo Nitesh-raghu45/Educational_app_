@@ -126,9 +126,10 @@ async def _vector_search(
     with timing.step("search: pinecone"):
         matches = await asyncio.to_thread(
             providers.vector_store().query,
-            providers.namespace_for(user_id),
+            providers.namespace_for(),
             vector,
             top_k,
+            str(user_id),
             [str(d) for d in document_ids],
         )
     return sorted((m for m in matches if m.score >= min_score), key=lambda m: m.score, reverse=True)
