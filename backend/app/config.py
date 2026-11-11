@@ -20,8 +20,15 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 24 * 7
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8080"]
 
+    # Comma-separated emails of admin accounts: they add books to the shared library (which every
+    # user can ask about) and have no daily limits.
+    admin_emails: str = ""
+
     storage_dir: str = "./data/uploads"
     max_upload_mb: int = 25
+    # The database copy of an upload is only needed until it's processed (text and figures); then
+    # it's deleted to save database space. True keeps every copy.
+    keep_file_copies: bool = False
     # "queue" sends ingestion to the arq worker via Redis; "inline" runs it inside the API process.
     ingest_mode: str = "queue"
 
@@ -79,6 +86,16 @@ class Settings(BaseSettings):
     # Smaller (token-sized) chunks, so more of them are retrieved to give the LLM similar context.
     retrieval_top_k: int = 12
     retrieval_min_score: float = 0.25
+    # Questions about a whole chapter ("explain this chapter", "summarise it"): passages spread
+    # through the chapter plus the best search matches, up to a prompt size that stays well under
+    # Groq's free limit of 8,000 tokens per minute (counted in characters, ~4 per token; the
+    # whole prompt: rules, earlier conversation and sources).
+    overview_chunks: int = 40
+    overview_search_hits: int = 8
+    overview_prompt_chars: int = 22000
+    # Room for a full chapter explanation plus the model's reasoning. Groq counts the tokens
+    # actually used against the limit, not this cap.
+    overview_max_tokens: int = 8192
     # Hybrid search: BM25 keyword search alongside vector search, merged with reciprocal rank fusion.
     hybrid_search: bool = True
     retrieval_candidates: int = 30
@@ -91,8 +108,21 @@ class Settings(BaseSettings):
     # they can be found by search and shown in answers.
     figures_enabled: bool = True
     groq_vision_model: str = "qwen/qwen3.8-27b"
+    # Google Gemini takes over vision work when Groq's limits are reached (optional, free key
+    # from Google AI Studio). Work no provider can take now waits and is retried every
+    # VISION_RETRY_MINUTES.
+    gemini_api_key: str = ""
+    # Tried in order. On Google's free tier each model has its own daily limit, so several
+    # models multiply the free capacity. All of these transcribe NCERT math pages well.
+    gemini_vision_models: str = "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest"
+    vision_retry_minutes: int = 10
     max_figures_per_document: int = 30
     daily_figure_limit: int = 150
+    # Math-heavy PDF pages (fractions, powers, roots, symbols the text layer garbles) are read
+    # again from a picture of the page by the vision model, which writes the math in LaTeX.
+    math_vision_enabled: bool = True
+    math_vision_max_pages: int = 40
+    daily_math_page_limit: int = 300
     # Pictures from the web in answers: Wikipedia images (free) and, with a Serper.dev key,
     # Google Images (used only when the student asks for a picture). The search runs alongside
     # document retrieval and is dropped if it takes longer than web_image_timeout seconds.
@@ -104,6 +134,14 @@ class Settings(BaseSettings):
     web_image_cache_seconds: int = 60 * 60 * 24
     history_window: int = 8
     summary_min_new_messages: int = 4
+
+    @property
+    def gemini_model_list(self) -> list[str]:
+        return list(dict.fromkeys(m.strip() for m in self.gemini_vision_models.split(",") if m.strip()))
+
+    @property
+    def admin_email_set(self) -> frozenset[str]:
+        return frozenset(e.strip().lower() for e in self.admin_emails.split(",") if e.strip())
 
 
 @lru_cache

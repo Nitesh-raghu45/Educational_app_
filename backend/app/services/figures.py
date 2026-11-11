@@ -16,14 +16,15 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import SessionLocal
 from ..errors import AppError
-from ..models import Document, DocumentChunk, DocumentFigure, FigureImage, FigureScan, utcnow
-from . import providers, stored_files, usage
+from ..models import Document, DocumentChunk, DocumentFigure, FigureImage, FigureScan, VisionBacklog, utcnow
+from . import library, mathtext, providers, stored_files, usage
+from .vision import is_retryable
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,16 @@ MIN_SIDE_PX = 120  # smaller images are icons, bullets or decorations
 MIN_SIDE_PT = 60  # ... and so are images drawn smaller than ~2 cm on the page
 MAX_ASPECT = 6.0  # thinner ones are rules, borders and banners
 REPEATED_ON_PAGES = 3  # the same image on this many pages is a logo or page decoration
-MIN_VECTOR_PATHS = 30  # pages with this many drawn shapes likely contain a vector diagram
-MIN_VECTOR_AREA = 0.12  # ... covering at least this share of the page
+# Vector diagrams: drawn shapes that touch (within VECTOR_GAP_PT) form one cluster. A cluster
+# of this many shapes, covering this share of the page, is a diagram; fewer are fraction bars,
+# rules, underlines and bullets (measured on NCERT pages: diagrams have 7-1,000+ shapes, noise 1-5).
+VECTOR_GAP_PT = 6
+MIN_VECTOR_PATHS = 6
+MIN_VECTOR_AREA = 0.012
+MIN_VECTOR_SIDE_PT = 40
+MAX_VECTOR_FIGURES_PER_PAGE = 4
+VECTOR_MARGIN_PT = 12  # room for the diagram's text labels (A, B, C, Fig. 6.9)
+VECTOR_RENDER_SCALE = 3  # small diagrams stay sharp
 STORE_MAX_SIDE = 1600
 VISION_MAX_SIDE = 1024
 CONTEXT_CHARS = 700
@@ -101,14 +110,16 @@ def _pdf_candidates(path: Path, limit: int) -> list[Candidate]:
                 text = " ".join(textpage.get_text_bounded().split())
                 textpage.close()
                 context = text[:CONTEXT_CHARS]
-                found_image = False
+                image_boxes = []
                 for obj in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE]):
                     left, bottom, right, top = obj.get_pos()
                     if min(right - left, top - bottom) < MIN_SIDE_PT:
                         continue
-                    covers_page = (right - left) * (top - bottom) > 0.85 * page_w * page_h
-                    if covers_page and not text:
-                        continue  # a scanned page of text: OCR already reads it
+                    if (right - left) * (top - bottom) > 0.85 * page_w * page_h:
+                        # A whole page: a scan (OCR or its text layer already reads it), a
+                        # background or a watermark, never one figure. Diagrams drawn over it
+                        # are still found below as vector shapes.
+                        continue
                     try:
                         # The image at its own resolution (render=True would shrink it to its
                         # size on the page at 72 dpi, blurring labels).
@@ -121,18 +132,18 @@ def _pdf_candidates(path: Path, limit: int) -> list[Candidate]:
                     candidate = _encode(image, number, context)
                     if candidate:
                         candidates.append(candidate)
-                        found_image = True
-                if not found_image:
-                    region = _vector_region(page, pdfium_c, page_w, page_h)
-                    if region:
-                        left, bottom, right, top = region
-                        image = page.render(
-                            scale=2,
-                            crop=(left, bottom, page_w - right, page_h - top),
-                        ).to_pil()
-                        candidate = _encode(image, number, context)
-                        if candidate:
-                            candidates.append(candidate)
+                        image_boxes.append((left, bottom, right, top))
+                # Shapes are positioned on the whole sheet (media box); rendering crops from the
+                # visible area (crop box), which can be inset (NCERT books: 18 pt on each side).
+                visible = page.get_cropbox()
+                for left, bottom, right, top in _vector_regions(page, pdfium_c, visible, image_boxes):
+                    image = page.render(
+                        scale=VECTOR_RENDER_SCALE,
+                        crop=(left - visible[0], bottom - visible[1], visible[2] - right, visible[3] - top),
+                    ).to_pil()
+                    candidate = _encode(image, number, context)
+                    if candidate:
+                        candidates.append(candidate)
             finally:
                 page.close()
     finally:
@@ -140,24 +151,118 @@ def _pdf_candidates(path: Path, limit: int) -> list[Candidate]:
     return candidates
 
 
-def _vector_region(page, pdfium_c, page_w: float, page_h: float) -> tuple[float, float, float, float] | None:
-    """Bounding box of a diagram drawn with vector shapes (lines, boxes, arrows), if any."""
+Box = tuple[float, float, float, float]  # left, bottom, right, top, in PDF points
+
+
+def _overlaps(a: Box, b: Box, gap: float = 0) -> bool:
+    return a[0] - gap <= b[2] and b[0] - gap <= a[2] and a[1] - gap <= b[3] and b[1] - gap <= a[3]
+
+
+CLUSTER_CELL_PT = 1.5  # grid resolution for clustering: boxes up to gap + 1.5 pt apart may join
+CLUSTER_MAX_CELLS = 2_000_000
+
+
+def cluster_boxes(boxes: list[Box], gap: float) -> list[tuple[int, Box]]:
+    """Groups boxes that touch (within about `gap`), directly or through others: (box count, bounds).
+
+    Each box, grown a little, marks the grid cells it covers; touching marked cells form one
+    group. Boxes closer than `gap` always join, ones more than gap + one cell apart never do.
+    The work grows with the number of boxes plus the page area, not boxes squared: some pages
+    draw an illustration as 50,000+ tiny shapes, where comparing every pair takes hours.
+    """
+    if not boxes:
+        return []
+    import numpy as np
+
+    arr = np.asarray(boxes, dtype=float)
+    x0, y0 = arr[:, 0].min() - gap, arr[:, 1].min() - gap
+    span_x, span_y = arr[:, 2].max() + gap - x0, arr[:, 3].max() + gap - y0
+    cell = max(CLUSTER_CELL_PT, float(np.sqrt(span_x * span_y / CLUSTER_MAX_CELLS)))
+    # Cells of boxes less than (2 * half + cell) apart touch, so this makes that distance `gap`.
+    half = max(0.0, (gap - cell) / 2)
+    left = np.floor((arr[:, 0] - half - x0) / cell).astype(np.int64)
+    bottom = np.floor((arr[:, 1] - half - y0) / cell).astype(np.int64)
+    right = np.floor((arr[:, 2] + half - x0) / cell).astype(np.int64)
+    top = np.floor((arr[:, 3] + half - y0) / cell).astype(np.int64)
+    grid = np.zeros((int(top.max()) + 1, int(right.max()) + 1), dtype=bool)
+    for l, b, r, t in zip(left.tolist(), bottom.tolist(), right.tolist(), top.tolist()):
+        grid[b : t + 1, l : r + 1] = True
+
+    # Label connected areas: runs of marked cells in each row, joined to touching runs in the row below.
+    parent: list[int] = []
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    labels = np.full(grid.shape, -1, dtype=np.int64)
+    previous: list[tuple[int, int, int]] = []  # (start, end, run id) in the row below
+    for y in range(grid.shape[0]):
+        padded = np.concatenate(([False], grid[y], [False])).astype(np.int8)
+        edges = np.flatnonzero(np.diff(padded))
+        runs = []
+        k = 0
+        for start, end in zip(edges[0::2].tolist(), (edges[1::2] - 1).tolist()):
+            run = len(parent)
+            parent.append(run)
+            labels[y, start : end + 1] = run
+            # Runs in the row below that overlap this one (both lists are sorted by start).
+            while k < len(previous) and previous[k][1] < start:
+                k += 1
+            j = k
+            while j < len(previous) and previous[j][0] <= end:
+                parent[root(run)] = root(previous[j][2])
+                j += 1
+            runs.append((start, end, run))
+        previous = runs
+
+    groups: dict[int, list[int]] = {}
+    for i, (b, l) in enumerate(zip(bottom.tolist(), left.tolist())):
+        groups.setdefault(root(int(labels[b, l])), []).append(i)
+    result = []
+    for members in groups.values():
+        g = arr[members]
+        result.append((len(members), (float(g[:, 0].min()), float(g[:, 1].min()), float(g[:, 2].max()), float(g[:, 3].max()))))
+    return result
+
+
+def _vector_regions(page, pdfium_c, visible: Box, image_boxes: list[Box]) -> list[Box]:
+    """Bounds of each diagram drawn with vector shapes (lines, arrows, curves) on the page.
+
+    The shapes are clustered first: one box around every shape on a page would also take in the
+    page's header rule and every fraction bar, i.e. usually the whole page.
+    """
+    page_area = (visible[2] - visible[0]) * (visible[3] - visible[1])
     boxes = []
     for obj in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_PATH]):
-        left, bottom, right, top = obj.get_pos()
-        if (right - left) * (top - bottom) > 0.9 * page_w * page_h:
+        box = obj.get_pos()
+        if not _overlaps(box, visible):
+            continue  # outside the visible page (e.g. printer's crop marks)
+        if (box[2] - box[0]) * (box[3] - box[1]) > 0.9 * page_area:
             continue  # page frame or background
-        boxes.append((left, bottom, right, top))
-    if len(boxes) < MIN_VECTOR_PATHS:
-        return None
-    margin = 12
-    left = max(min(b[0] for b in boxes) - margin, 0)
-    bottom = max(min(b[1] for b in boxes) - margin, 0)
-    right = min(max(b[2] for b in boxes) + margin, page_w)
-    top = min(max(b[3] for b in boxes) + margin, page_h)
-    if (right - left) * (top - bottom) < MIN_VECTOR_AREA * page_w * page_h:
-        return None
-    return left, bottom, right, top
+        if box[2] - box[0] > 0.6 * (visible[2] - visible[0]) and box[3] - box[1] < 4:
+            continue  # a header, footer or section rule, which would join a diagram it passes near
+        boxes.append(box)
+    regions = []
+    for count, (left, bottom, right, top) in sorted(cluster_boxes(boxes, VECTOR_GAP_PT), key=lambda c: -c[0]):
+        width, height = right - left, top - bottom
+        if (
+            count < MIN_VECTOR_PATHS
+            or width * height < MIN_VECTOR_AREA * page_area
+            or min(width, height) < MIN_VECTOR_SIDE_PT
+            or max(width, height) / max(min(width, height), 1) > MAX_ASPECT
+            or any(_overlaps((left, bottom, right, top), image) for image in image_boxes)  # a photo's frame
+        ):
+            continue
+        m = VECTOR_MARGIN_PT
+        regions.append(
+            (max(left - m, visible[0]), max(bottom - m, visible[1]), min(right + m, visible[2]), min(top + m, visible[3]))
+        )
+        if len(regions) == MAX_VECTOR_FIGURES_PER_PAGE:
+            break
+    return sorted(regions, key=lambda r: (-r[3], r[0]))  # reading order: top to bottom, left to right
 
 
 def _docx_candidates(path: Path, limit: int) -> list[Candidate]:
@@ -266,7 +371,11 @@ async def _describe(
         caption = _parse_caption(await providers.vision().describe(candidate.jpeg, prompt))
         stats["described" if caption else "not useful"] += 1
         return caption
-    except Exception:
+    except Exception as exc:
+        if is_retryable(exc):
+            # A passing problem (rate limit, timeout, server busy): the whole document waits.
+            stats["rate limited"] += 1
+            return None
         logger.warning("Describing a figure from %r%s failed", filename, page, exc_info=True)
         # Keep a figure the document itself captions ("Fig: Bluetooth Piconet") rather than lose it.
         caption = caption_from_context(candidate.context)
@@ -311,12 +420,55 @@ async def mark_processing(session: AsyncSession, document_id: uuid.UUID) -> None
 
 
 async def _set_scan(session: AsyncSession, document_id: uuid.UUID, status: str, count: int = 0) -> None:
-    scan = await session.get(FigureScan, document_id)
-    if scan is None:
-        session.add(FigureScan(document_id=document_id, status=status, figure_count=count, updated_at=utcnow()))
-    else:
-        scan.status, scan.figure_count, scan.updated_at = status, count, utcnow()
+    """Record the figure status. A plain UPDATE, so a document deleted meanwhile (e.g. while its
+    figures were being extracted) is simply left alone instead of failing the run."""
+    values = {"status": status, "figure_count": count, "updated_at": utcnow()}
+    result = await session.execute(
+        update(FigureScan).where(FigureScan.document_id == document_id).values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 0 and await session.scalar(select(Document.id).where(Document.id == document_id)):
+        session.add(FigureScan(document_id=document_id, **values))
     await session.commit()
+
+
+_FIGURE_LINE_RE = re.compile(r"\[Figure:\s*([^\]\n]{3,400})\]", re.IGNORECASE)
+
+
+def _caption_from_line(line: str, context: str) -> tuple[str, str]:
+    line = " ".join(line.split()).strip(" .")
+    # "Fig. 6.9 – lines AX and AY with points ..." -> title "Fig. 6.9", the rest describes it.
+    label = re.match(r"(fig(?:ure)?\.?\s*[\d.]*\d)\s*[:–—-]?\s*(.*)", line, re.IGNORECASE)
+    title = (label.group(1) + (f": {label.group(2)}" if label.group(2) else "")) if label else line
+    if len(title) > 120:
+        title = title[:117].rsplit(" ", 1)[0] + "…"
+    context = " ".join((context or "").split())[:400]
+    return title, f"{line} (figure from the page transcript). Text on the page: {context}"
+
+
+def captions_from_transcripts(candidates: list[Candidate], transcripts: dict[int, str]) -> dict[int, tuple[str, str]]:
+    """Captions for figure candidates on transcribed pages, by candidate index.
+
+    A page's [Figure: ...] lines are matched to its candidates in reading order when the counts
+    agree; a page with one candidate takes all its lines. Anything else is left to the vision
+    model, since a mismatch could caption the wrong picture.
+    """
+    by_page: dict[int, list[int]] = {}
+    for index, candidate in enumerate(candidates):
+        if candidate.page is not None:
+            by_page.setdefault(candidate.page, []).append(index)
+    captions: dict[int, tuple[str, str]] = {}
+    for page, indexes in by_page.items():
+        lines = list(dict.fromkeys(m.group(1) for m in _FIGURE_LINE_RE.finditer(transcripts.get(page, ""))))
+        if not lines:
+            continue
+        if len(indexes) == 1:
+            lines = ["; ".join(lines)] if len(lines) > 1 else lines
+        if len(lines) != len(indexes):
+            continue
+        for index, line in zip(indexes, lines):
+            captions[index] = _caption_from_line(line, candidates[index].context)
+    return captions
 
 
 async def process_document(document_id: uuid.UUID) -> None:
@@ -338,20 +490,43 @@ async def process_document(document_id: uuid.UUID) -> None:
         stats: Counter = Counter()
         user_id = doc.user_id  # still readable after a rollback
         try:
+            if await session.get(VisionBacklog, doc.id) is not None:
+                # Math pages still to be read: their transcripts caption most figures for free,
+                # so the figures wait for them (main.retry_vision_backlog runs both).
+                await _set_scan(session, doc.id, "waiting")
+                return
             await _set_scan(session, doc.id, "processing")
             await clear_figures(session, doc)
             await session.commit()
             limit = settings.max_figures_per_document
             candidates = await asyncio.to_thread(extract_candidates, Path(doc.storage_path), limit)
+            # Figures on pages the vision model already transcribed take their caption from the
+            # transcript's [Figure: ...] lines: no extra vision call.
+            from_pages = captions_from_transcripts(candidates, await mathtext.page_transcripts(doc.id))
+            stats["captioned from page transcript"] += len(from_pages)
 
             # A few descriptions at a time: quick, without tripping the vision model's rate limit.
             slots = asyncio.Semaphore(3)
 
-            async def describe(candidate: Candidate):
+            async def describe(index: int, candidate: Candidate):
+                if index in from_pages:
+                    return from_pages[index]
                 async with slots:
                     return await _describe(candidate, doc.filename, doc.user_id, stats)
 
-            captions = await asyncio.gather(*(describe(c) for c in candidates))
+            captions = await asyncio.gather(*(describe(i, c) for i, c in enumerate(candidates)))
+            if stats["rate limited"]:
+                # Every vision provider is at its limit: keep nothing from this run, keep the
+                # file, and let main.retry_vision_backlog extract the figures later.
+                await session.rollback()
+                for _ in range(stats["reserved"]):
+                    await usage.refund(session, user_id, "figure")
+                await _set_scan(session, document_id, "waiting")
+                logger.info(
+                    "Figures for document %s (%r) wait for the vision models' rate limits (%d candidate(s))",
+                    document_id, doc.filename, len(candidates),
+                )
+                return
             described = [(c, cap) for c, cap in zip(candidates, captions) if cap][:limit]
 
             rows, chunks, images = [], [], []
@@ -375,8 +550,9 @@ async def process_document(document_id: uuid.UUID) -> None:
                 )
             if chunks:
                 vectors = await asyncio.to_thread(providers.embedder().embed_documents, [c.text for c in chunks])
+                owner = await library.vector_owner(session, doc)
                 items = [
-                    (c.id, v, providers.vector_metadata(doc.user_id, doc.id, c.chunk_index, c.page))
+                    (c.id, v, providers.vector_metadata(owner, doc.id, c.chunk_index, c.page))
                     for c, v in zip(chunks, vectors)
                 ]
                 await asyncio.to_thread(providers.vector_store().upsert, providers.namespace_for(), items)
@@ -386,6 +562,7 @@ async def process_document(document_id: uuid.UUID) -> None:
                 doc.updated_at = utcnow()  # refreshes the keyword-search cache for this document
             await session.commit()
             await _set_scan(session, doc.id, "done", len(rows))
+            await stored_files.release(session, doc.id)  # fully processed: the copy isn't needed
             details = ", ".join(f"{n} {what}" for what, n in stats.items() if what != "reserved")
             logger.info(
                 "Figures for document %s (%r): %d candidate(s), %d kept (%s)",
@@ -421,7 +598,7 @@ async def get_owned_figure(session: AsyncSession, figure_id: uuid.UUID, user_id:
     figure = await session.scalar(
         select(DocumentFigure)
         .join(Document, Document.id == DocumentFigure.document_id)
-        .where(DocumentFigure.id == figure_id, Document.user_id == user_id)
+        .where(DocumentFigure.id == figure_id, library.readable_by(user_id))
     )
     if figure is None:
         raise AppError(404, "FIGURE_NOT_FOUND", "This figure does not exist.")

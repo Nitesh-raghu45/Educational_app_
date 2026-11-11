@@ -1,6 +1,8 @@
 export interface User {
   id: string;
   email: string;
+  /** Admins add books to the shared library and have no daily limits. */
+  is_admin: boolean;
 }
 
 export interface Section {
@@ -59,10 +61,17 @@ export interface DocumentInfo {
   error: string | null;
   chunk_count: number;
   created_at: string;
-  figure_status: "processing" | "done" | "failed" | null;
+  /** "waiting": the vision models are at their rate limits; finished automatically later. */
+  figure_status: "processing" | "waiting" | "done" | "failed" | null;
+  /** Math pages waiting for the vision models' rate limits (answers use plain text meanwhile). */
+  vision_pending: boolean;
   /** Upload responses only: the same file was already in the library / already in this chat. */
   duplicate?: "existing" | "already_in_chat" | null;
   figure_count: number;
+  /** In the shared library: uploaded by an admin, readable by everyone. */
+  library: boolean;
+  grade: string | null;
+  subject: string | null;
 }
 
 export interface Quiz {

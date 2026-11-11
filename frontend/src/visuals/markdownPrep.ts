@@ -62,13 +62,45 @@ export function prepareWebImages(text: string): string {
   return text.replace(WEB_REF_RE, (_, n: string) => "\n\n```webimage\n" + n + "\n```\n\n");
 }
 
+// Models break lines inside table cells with <br>, the only HTML answers may use.
+const BR_TAG_RE = /<br\s*\/?>/gi;
+const BR_ONLY_RE = /^<br\s*\/?>$/i;
+// Inline math ($...$, not $$...$$) on one line.
+const INLINE_MATH_RE = /(?<![$\\])\$(?!\$)([^$\n]+?)\$(?!\$)/g;
+
+/** A <br> inside $...$ would reach KaTeX as text: close the formula before it and reopen after. */
+export function splitMathAtBreaks(text: string): string {
+  return text.replace(INLINE_MATH_RE, (whole, expr: string) => {
+    const parts = expr.split(BR_TAG_RE);
+    if (parts.length === 1) return whole;
+    return parts.map((part) => (part.trim() ? `$${part.trim()}$` : "")).join("<br>");
+  });
+}
+
+/** Remark plugin: <br> tags become line breaks. Other HTML stays escaped text (no raw HTML). */
+export function remarkBreakTags() {
+  type Node = { type: string; value?: string; children?: Node[] };
+  const walk = (node: Node) => {
+    if (!node.children) return;
+    node.children = node.children.map((child) => {
+      if (child.type === "html" && BR_ONLY_RE.test((child.value ?? "").trim())) return { type: "break" };
+      walk(child);
+      return child;
+    });
+  };
+  return (tree: Node) => walk(tree);
+}
+
 export function prepareAnswer(markdown: string): string {
-  return mapOutsideCode(markdown, (text) => prepareCitations(normalizeMath(prepareWebImages(prepareFigures(text)))));
+  return mapOutsideCode(markdown, (text) =>
+    prepareCitations(splitMathAtBreaks(normalizeMath(prepareWebImages(prepareFigures(text))))),
+  );
 }
 
 /** Plain text for the Copy button: citation, figure and picture markers removed (outside code only). */
 export function stripCitations(markdown: string): string {
   return mapOutsideCode(markdown, (text) => text.replace(FIGURE_REF_RE, "").replace(WEB_REF_RE, "").replace(CITATION_RE, ""))
+    .replace(BR_TAG_RE, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

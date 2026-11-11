@@ -59,11 +59,11 @@ class FakeVectorStore:
         for vector_id, values, metadata in items:
             ns[vector_id] = (values, metadata)
 
-    def query(self, namespace, vector, top_k, user_id, document_ids):
+    def query(self, namespace, vector, top_k, owners, document_ids):
         scored = [
             Match(vid, sum(a * b for a, b in zip(vector, values)), meta)
             for vid, (values, meta) in self.namespaces.get(namespace, {}).items()
-            if meta["user_id"] == user_id and meta["document_id"] in document_ids
+            if meta["user_id"] in owners and meta["document_id"] in document_ids
         ]
         return sorted(scored, key=lambda m: m.score, reverse=True)[:top_k]
 

@@ -147,12 +147,13 @@ def test_text_pdf_with_picture_pages_survives_missing_ocr(tmp_path, monkeypatch)
 
     monkeypatch.setattr(pypdf, "PdfReader", Reader)
     monkeypatch.setattr(ingestion, "_ocr_pdf_pages", no_ocr)
+    (tmp_path / "notes.pdf").write_bytes(b"%PDF")
     pages, ocr_pages = extract_text(tmp_path / "notes.pdf")
     assert ocr_pages == 0 and [n for n, _ in pages] == [1, 2, 3] and "piconet" in pages[0][1]
 
     monkeypatch.setattr(pypdf, "PdfReader", lambda path: type("R", (), {"pages": [Page(""), Page("")]})())
     with pytest.raises(IngestionError, match="not installed"):
-        extract_text(tmp_path / "scan.pdf")
+        extract_text((tmp_path / "notes.pdf").replace(tmp_path / "scan.pdf"))
 
 
 def test_only_installed_ocr_languages_are_used(monkeypatch):

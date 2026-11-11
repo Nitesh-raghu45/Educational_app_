@@ -120,8 +120,8 @@ When a picture helps, the model adds one visual block, built only from the stude
 ### Figures from documents ([services/figures.py](backend/app/services/figures.py))
 Real figures from the student's files appear in answers, next to the text they illustrate:
 1. **Extract:** after a document's text is ready, embedded images in PDFs and DOCX files are pulled out
-   (plus vector-drawn diagrams in PDFs, and photo uploads themselves). Icons, thin strips, scanned text
-   pages and images repeated on 3+ pages (logos) are skipped. At most `MAX_FIGURES_PER_DOCUMENT` (30).
+   (plus vector-drawn diagrams in PDFs, each cut out on its own, and photo uploads themselves). Icons,
+   thin strips, whole-page images (scans, backgrounds) and images repeated on 3+ pages (logos) are skipped. At most `MAX_FIGURES_PER_DOCUMENT` (30).
 2. **Describe:** a Groq vision model (`qwen/qwen3.8-27b`) writes a title and description of each figure,
    and drops ones with no study value. About 800 input tokens per figure, counted against a daily
    per-user limit (`DAILY_FIGURE_LIMIT`).
@@ -164,11 +164,44 @@ stream with `fetch()` because `EventSource` can't send a POST body or an `Author
 2. Rewrite follow-ups ("explain that again") into a standalone query with the fast Groq model.
 3. **Hybrid search**, run in parallel:
    - Vector search: embed the query with multilingual MiniLM and query Pinecone's shared namespace, filtered to the student's `user_id` and `document_id ∈ section's ready documents`. Matches below `RETRIEVAL_MIN_SCORE` are dropped.
-   - Keyword search: BM25 over the stored chunk text ([services/keyword.py](backend/app/services/keyword.py)), with stopwords removed and words stemmed. A chunk must share at least 2 query terms (1 for a one-word query). Term statistics are cached per document.
+   - Keyword search: BM25 over the stored chunk text ([services/keyword.py](backend/app/services/keyword.py)), with stopwords removed and words stemmed; `x²`, `x2` and `x^{2}` match each other and section numbers like `6.1` stay whole. A chunk must share at least 2 query terms (1 for a one-word query). Term statistics are cached per document.
 4. Merge both lists with reciprocal rank fusion (RRF) and keep the top `RETRIEVAL_TOP_K`. Load chunk text from the database, which re-checks ownership. Each citation records `matched_by`: `vector`, `keyword` or `both`.
 5. **Evidence gate:** with no evidence, the app returns a fixed "couldn't find it in your documents" answer and never calls the LLM.
 6. Otherwise, stream a grounded answer. The prompt requires `[n]` citations and treats history as context, not evidence.
 7. Save the answer with its cited chunks. Fold older messages into the rolling summary, so all 30 turns keep context without sending every turn to the LLM.
+
+### Shared library ([services/library.py](backend/app/services/library.py))
+Books an admin uploads (e.g. NCERT textbooks) are readable by every user; everyone's own uploads stay
+private to them.
+- **Admins** are the accounts whose emails are in `ADMIN_EMAILS`. They see **Manage library** in the
+  sidebar: pick a class and subject, upload chapter PDFs, watch them being processed, delete them. Admins
+  have no daily limits, and library books are processed one at a time like any upload.
+- **Users** see a **Shared library** section in a chat's documents panel, grouped by class and subject,
+  and add a whole book or single chapters to their chat (`POST /sections/{id}/documents`).
+- **Access:** a user may read their own documents and the library's (`library.readable_by`), checked
+  when attaching, retrieving, searching keywords, building quizzes and serving figures. Library vectors
+  carry the owner `"library"` instead of a user id, so a search filters on `user_id ∈ {me, library}`
+  with no extra query.
+- **API:** `GET /library` (everyone; admins also see books still processing), `POST /library` (admin:
+  `file`, `grade`, `subject`), `DELETE /library/{id}` (admin; removes it from every chat).
+- **Database space:** an upload's database copy is deleted once its text and figures are processed
+  (`KEEP_FILE_COPIES=false`), since those copies take most of the space. Re-embedding works from the
+  stored chunk text; re-uploading the same file restores a copy if something still needs it.
+
+### Vision rate limits ([services/vision.py](backend/app/services/vision.py))
+Figure descriptions and math-page transcriptions use vision models, whose free tiers cap tokens per day
+(Groq: 200,000 for `qwen/qwen3.8-27b`, about 2-4 chapters of a math textbook).
+- **Provider chain:** Groq first, then each model in `GEMINI_VISION_MODELS` when `GEMINI_API_KEY` is set
+  (on Google's free tier every model has its own daily limit, so a list multiplies it). A provider that
+  reports a rate limit is paused for as long as it asks; waits up to 90 s are waited out.
+- **Deferred work:** when every provider is paused for longer, a document is still made ready from its
+  text layer, and the rest waits: math pages go to `vision_backlog`, figures get the status `waiting`, and
+  the file copy is kept. Every `VISION_RETRY_MINUTES` (10) the app processes them again once a provider
+  is available. The UI shows "finishing later".
+- **No paying twice:** each transcribed page is saved (`page_transcripts`), so processing again only
+  reads the pages still missing. Figures on transcribed pages are captioned from the transcript's
+  `[Figure: …]` lines instead of a separate vision call, and pages are sent at 1280 px.
+- Admins can **Re-process** a library book (e.g. one processed while the limits were reached).
 
 ### Document ingestion ([services/ingestion.py](backend/app/services/ingestion.py))
 Upload → private storage → arq job (or inline) → parse (pypdf / python-docx, plus Tesseract OCR) →
@@ -180,6 +213,12 @@ and polls `GET /documents/{id}/status`.
   Tesseract in English and Hindi (`OCR_LANGUAGES=eng+hin`). Scanned pages are rendered with pypdfium2 at
   `OCR_DPI` (200), up to `OCR_MAX_PAGES` (40) per document. Images are rotated using their EXIF data,
   converted to greyscale, enlarged when small, and auto-contrasted first.
+- **Math-heavy PDFs** ([services/mathtext.py](backend/app/services/mathtext.py)), e.g. NCERT books:
+  Symbol-font characters (∠ Δ = − ×, which text layers report as private-use codes) are mapped back to
+  real symbols. Pages whose text layer lost the math layout (fractions split over lines, `x2` for x²)
+  are rendered and transcribed by the vision model with the math in LaTeX, which the website renders
+  with KaTeX. Up to `MATH_VISION_MAX_PAGES` (40) per document and `DAILY_MATH_PAGE_LIMIT` (300) per
+  student per day; past those, or if the model fails, a page keeps its text-layer text.
 - **Multilingual embeddings:** `paraphrase-multilingual-MiniLM-L12-v2` (50+ languages, including Hindi
   and Hinglish) runs locally on ONNX Runtime, with its compact SentencePiece vocabulary and with weights
   stored as ONNX external data, which is memory-mapped (the Docker build converts it). The whole API

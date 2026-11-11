@@ -122,6 +122,27 @@ export async function streamSSE(
   }
 }
 
+/** POST a form with upload progress (fetch() can't report it, so this uses XMLHttpRequest). */
+function uploadForm<T>(path: string, form: FormData, onProgress?: (fraction: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", BASE + path);
+    for (const [key, value] of Object.entries(authHeaders())) xhr.setRequestHeader(key, value);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded / e.total);
+    };
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        reject(await toApiError(new Response(xhr.responseText, { status: xhr.status })));
+      }
+    };
+    xhr.onerror = () => reject(new ApiError(0, "NETWORK_ERROR", "Upload failed. Check your connection and try again."));
+    xhr.send(form);
+  });
+}
+
 export const api = {
   register: (email: string, password: string) =>
     request<{ access_token: string; user: User }>("POST", "/auth/register", { email, password }),
@@ -139,32 +160,28 @@ export const api = {
 
   listDocuments: () => request<DocumentInfo[]>("GET", "/documents"),
   sectionDocuments: (id: string) => request<DocumentInfo[]>("GET", `/sections/${id}/documents`),
-  /** Uses XMLHttpRequest because fetch() can't report upload progress. */
-  uploadDocument: (file: File, sectionId: string, onProgress?: (fraction: number) => void) =>
-    new Promise<DocumentInfo>((resolve, reject) => {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("section_id", sectionId);
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", BASE + "/documents");
-      for (const [key, value] of Object.entries(authHeaders())) xhr.setRequestHeader(key, value);
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) onProgress?.(e.loaded / e.total);
-      };
-      xhr.onload = async () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(JSON.parse(xhr.responseText));
-        } else {
-          reject(await toApiError(new Response(xhr.responseText, { status: xhr.status })));
-        }
-      };
-      xhr.onerror = () => reject(new ApiError(0, "NETWORK_ERROR", "Upload failed. Check your connection and try again."));
-      xhr.send(form);
-    }),
+  uploadDocument: (file: File, sectionId: string, onProgress?: (fraction: number) => void) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("section_id", sectionId);
+    return uploadForm<DocumentInfo>("/documents", form, onProgress);
+  },
   attachDocument: (sectionId: string, documentId: string) =>
     request<DocumentInfo>("POST", `/sections/${sectionId}/documents`, { document_id: documentId }),
   detachDocument: (sectionId: string, documentId: string) =>
     request<void>("DELETE", `/sections/${sectionId}/documents/${documentId}`),
+
+  listLibrary: () => request<DocumentInfo[]>("GET", "/library"),
+  /** Admins only. */
+  addToLibrary: (file: File, grade: string, subject: string, onProgress?: (fraction: number) => void) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("grade", grade);
+    form.append("subject", subject);
+    return uploadForm<DocumentInfo>("/library", form, onProgress);
+  },
+  removeFromLibrary: (documentId: string) => request<void>("DELETE", `/library/${documentId}`),
+  reprocessLibraryDocument: (documentId: string) => request<DocumentInfo>("POST", `/library/${documentId}/reprocess`),
 
   /** Figure images need the Authorization header, which an <img src> can't send. */
   figureImage: async (id: string): Promise<Blob> => {

@@ -18,7 +18,7 @@ class Embedder(Protocol):
 class VectorStore(Protocol):
     def upsert(self, namespace: str, items: list[tuple[str, list[float], dict[str, Any]]]) -> None: ...
     def query(
-        self, namespace: str, vector: list[float], top_k: int, user_id: str, document_ids: list[str]
+        self, namespace: str, vector: list[float], top_k: int, owners: list[str], document_ids: list[str]
     ) -> list[Any]: ...
     def delete(self, namespace: str, ids: list[str]) -> None: ...
 
@@ -30,6 +30,7 @@ class LLM(Protocol):
 
 class Vision(Protocol):
     async def describe(self, image_jpeg: bytes, prompt: str) -> str: ...
+    async def transcribe(self, image_jpeg: bytes, prompt: str) -> str: ...
 
 
 _embedder: Embedder | None = None
@@ -69,9 +70,9 @@ def llm() -> LLM:
 def vision() -> Vision:
     global _vision
     if _vision is None:
-        from .llm import GroqVision
+        from .vision import create_vision
 
-        _vision = GroqVision(get_settings())
+        _vision = create_vision(get_settings())
     return _vision
 
 
@@ -98,8 +99,8 @@ def model_slug(model: str) -> str:
 def namespace_for(model: str | None = None) -> str:
     """All students share one Pinecone namespace per embedding model (vectors from different
     models can't be compared, so they must never be searched together). Each vector carries its
-    owner's user_id, and every search filters on it, so students still only see their own
-    documents. One namespace per student would hit Pinecone's free-plan cap of 100 namespaces."""
+    owner (a user id, or "library" for the shared library) and every search filters on it, so
+    students only find their own documents and the library's. One namespace per student would hit Pinecone's free-plan cap of 100 namespaces."""
     return shared_namespace(model_slug(model or get_settings().embedding_model))
 
 
@@ -107,6 +108,7 @@ def shared_namespace(slug: str) -> str:
     return f"docs--{slug}"
 
 
-def vector_metadata(user_id: Any, document_id: Any, chunk_index: int, page: int | None) -> dict[str, Any]:
-    """Metadata stored with every vector. user_id scopes searches to the vector's owner."""
-    return {"user_id": str(user_id), "document_id": str(document_id), "chunk_index": chunk_index, "page": page or 0}
+def vector_metadata(owner: str, document_id: Any, chunk_index: int, page: int | None) -> dict[str, Any]:
+    """Metadata stored with every vector. `user_id` holds the owner (see library.vector_owner),
+    which scopes searches."""
+    return {"user_id": owner, "document_id": str(document_id), "chunk_index": chunk_index, "page": page or 0}

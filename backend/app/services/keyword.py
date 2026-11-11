@@ -17,12 +17,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Document, DocumentChunk
+from . import library
 
 K1 = 1.5
 B = 0.75
 MAX_CACHED_DOCUMENTS = 512
 
-_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+# Section numbers ("6.1", "2.3.4") are kept whole, so "Theorem 6.1" or "Exercise 2.1" can match
+# exactly; their parts are kept too.
+_TOKEN_RE = re.compile(r"\d+(?:\.\d+)+|\w+", re.UNICODE)
+# x² (typed by a student), x2 (a PDF's text layer) and x^{2} (LaTeX from the vision model) all
+# become "x2", so they match each other.
+_SUPERSCRIPTS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉", "01234567890123456789")
+_LATEX_POWER = re.compile(r"(\w)\s*[\^_]\s*\{?\s*(\d+)\s*\}?")
+# LaTeX layout commands: noise, unlike \angle or \triangle, which are words students search for.
+_LATEX_WORDS = frozenset("frac dfrac tfrac left right mathrm text textbf quad qquad displaystyle cdot".split())
 _STOPWORDS = frozenset(
     """a about above after again against all am an and any are as at be because been before being below
     between both but by can could did do does doing down during each few for from further had has have
@@ -43,9 +52,14 @@ except ImportError:  # pragma: no cover
 
 
 def tokenize(text: str) -> list[str]:
+    text = _LATEX_POWER.sub(r"\1\2", text.lower().translate(_SUPERSCRIPTS))
     tokens = []
-    for word in _TOKEN_RE.findall(text.lower()):
-        if word in _STOPWORDS or (len(word) == 1 and not word.isdigit()):
+    for word in _TOKEN_RE.findall(text):
+        if "." in word:  # a section number: whole, then its parts
+            tokens.append(word)
+            tokens.extend(word.split("."))
+            continue
+        if word in _STOPWORDS or word in _LATEX_WORDS or (len(word) == 1 and not word.isdigit()):
             continue
         tokens.append(_stem(word))
     return tokens
@@ -82,7 +96,7 @@ async def _indexes(
         (
             await session.execute(
                 select(Document.id, Document.updated_at).where(
-                    Document.id.in_(document_ids), Document.user_id == user_id
+                    Document.id.in_(document_ids), library.readable_by(user_id)
                 )
             )
         ).all()

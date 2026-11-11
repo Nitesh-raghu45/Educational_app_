@@ -18,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column
 
+from .config import get_settings
 from .db import Base
 
 
@@ -37,6 +38,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+    @property
+    def is_admin(self) -> bool:
+        """Admins are listed by email in ADMIN_EMAILS (no column: existing tables can't be migrated)."""
+        return self.email.lower() in get_settings().admin_email_set
 
 
 class ChatSection(Base):
@@ -194,7 +200,7 @@ class FigureScan(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
     )
-    # processing | done | failed
+    # processing | waiting (for the vision models' rate limits) | done | failed
     status: Mapped[str] = mapped_column(String(20), default="processing")
     figure_count: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
@@ -253,3 +259,45 @@ class QuizAttempt(Base):
     score: Mapped[int] = mapped_column(Integer)
     total: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class LibraryDocument(Base):
+    """A document in the shared library: uploaded by an admin, readable by every user, who can add
+    it to their own chats. A table of its own, like DocumentHash, since columns can't be added."""
+
+    __tablename__ = "library_documents"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    grade: Mapped[str] = mapped_column(String(20), default="")  # class, e.g. "10"
+    subject: Mapped[str] = mapped_column(String(60), default="")
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class PageTranscript(Base):
+    """A math-heavy PDF page as the vision model transcribed it (math in LaTeX). Kept so that
+    processing a document again (e.g. after a rate limit) never pays for the same page twice,
+    and so figures on the page can be captioned from the transcript's [Figure: ...] lines."""
+
+    __tablename__ = "page_transcripts"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    page: Mapped[int] = mapped_column(Integer, primary_key=True)
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class VisionBacklog(Base):
+    """A document with math pages the vision model couldn't read yet (rate limits). It is
+    answerable from its text layer meanwhile; main.retry_vision_backlog processes it again."""
+
+    __tablename__ = "vision_backlog"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    pages_left: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)

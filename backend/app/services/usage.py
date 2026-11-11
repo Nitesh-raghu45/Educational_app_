@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..errors import AppError
 from ..models import DailyUsage
+from . import library
 
 KINDS = ("question", "quiz", "upload", "chat")
 _LABELS = {
@@ -24,6 +25,7 @@ _LABELS = {
     "upload": "document uploads",
     "chat": "new chats",
     "figure": "figure descriptions",
+    "math_page": "math page readings",
 }
 
 
@@ -37,6 +39,8 @@ def limit_for(kind: str) -> int:
         "chat": settings.daily_chat_limit,
         # Not shown in the usage meter: when reached, new uploads just get no more figures today.
         "figure": settings.daily_figure_limit,
+        # Likewise: past it, math pages keep their text-layer text.
+        "math_page": settings.daily_math_page_limit,
     }[kind]
 
 
@@ -84,7 +88,7 @@ async def reserve(session: AsyncSession, user_id: uuid.UUID, kind: str) -> None:
     disappears if the caller rolls back.
     """
     limit = limit_for(kind)
-    if limit <= 0:
+    if limit <= 0 or await library.is_admin_id(session, user_id):
         return
     # Usual case: today's counter exists, so this is one round trip.
     if await _try_increment(session, user_id, kind, limit):
@@ -103,7 +107,7 @@ async def reserve(session: AsyncSession, user_id: uuid.UUID, kind: str) -> None:
 
 async def refund(session: AsyncSession, user_id: uuid.UUID, kind: str) -> None:
     """Give back a reservation whose action failed after it was committed (e.g. quiz generation)."""
-    if limit_for(kind) <= 0:
+    if limit_for(kind) <= 0 or await library.is_admin_id(session, user_id):
         return
     await session.execute(
         update(DailyUsage)
@@ -122,7 +126,8 @@ async def get_usage(session: AsyncSession, user_id: uuid.UUID) -> dict:
             )
         ).all()
     )
+    admin = await library.is_admin_id(session, user_id)  # no limits: shown as unlimited (0)
     return {
         "resets_at": resets_at().isoformat(),
-        "limits": {kind: {"used": rows.get(kind, 0), "limit": limit_for(kind)} for kind in KINDS},
+        "limits": {kind: {"used": rows.get(kind, 0), "limit": 0 if admin else limit_for(kind)} for kind in KINDS},
     }

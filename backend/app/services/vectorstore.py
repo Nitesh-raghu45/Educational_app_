@@ -91,7 +91,7 @@ class PineconeStore:
             )
 
     def query(
-        self, namespace: str, vector: list[float], top_k: int, user_id: str, document_ids: list[str]
+        self, namespace: str, vector: list[float], top_k: int, owners: list[str], document_ids: list[str]
     ) -> list[Match]:
         if not document_ids:
             return []
@@ -103,8 +103,8 @@ class PineconeStore:
             vector=vector,
             top_k=top_k,
             include_metadata=True,
-            # Students share the namespace: user_id keeps each search to its owner's vectors.
-            filter={"user_id": user_id, "document_id": {"$in": document_ids}},
+            # Students share the namespace: user_id keeps each search to vectors the user may read.
+            filter={"user_id": {"$in": owners}, "document_id": {"$in": document_ids}},
         )
         return [Match(m.id, float(m.score), dict(m.metadata or {})) for m in result.matches]
 

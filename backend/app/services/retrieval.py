@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import timing
 from ..config import get_settings
 from ..models import Document, DocumentChunk, DocumentFigure
-from . import conversation, providers
+from . import conversation, library, providers
 from .figures import FIGURE_CHUNK_BASE
 from .keyword import keyword_search
 
@@ -69,13 +69,13 @@ def format_sources(evidence: list[Evidence]) -> str:
 async def _load_chunks(
     session: AsyncSession, user_id: uuid.UUID, document_ids: list[uuid.UUID], chunk_ids: list[str]
 ) -> dict[str, tuple[DocumentChunk, str]]:
-    # Re-check ownership and section scope in the database; the vector store filter is not the only guard.
+    # Re-check access and section scope in the database; the vector store filter is not the only guard.
     rows = await session.execute(
         select(DocumentChunk, Document.filename)
         .join(Document, Document.id == DocumentChunk.document_id)
         .where(
             DocumentChunk.id.in_(chunk_ids),
-            Document.user_id == user_id,
+            library.readable_by(user_id),
             Document.id.in_(document_ids),
         )
     )
@@ -129,7 +129,7 @@ async def _vector_search(
             providers.namespace_for(),
             vector,
             top_k,
-            str(user_id),
+            library.search_owners(user_id),
             [str(d) for d in document_ids],
         )
     return sorted((m for m in matches if m.score >= min_score), key=lambda m: m.score, reverse=True)
@@ -203,32 +203,60 @@ async def attach_figures(session: AsyncSession, evidence: list[Evidence]) -> Non
             e.figure = {"id": str(f.id), "title": f.title, "width": f.width, "height": f.height}
 
 
-async def leading_chunks(
+def evenly_spaced(items: list, count: int) -> list:
+    """`count` items spread evenly from first to last, in order (all of them if there are fewer)."""
+    if count >= len(items):
+        return list(items)
+    if count <= 0:
+        return []
+    if count == 1:
+        return [items[0]]
+    step = (len(items) - 1) / (count - 1)
+    return [items[round(i * step)] for i in range(count)]
+
+
+async def spread_chunks(
     session: AsyncSession, *, user_id: uuid.UUID, document_ids: list[uuid.UUID], limit: int
 ) -> list[Evidence]:
-    """The opening chunks of each document, spread evenly across documents.
+    """Text chunks spread evenly through each document, in reading order.
 
-    Similarity search can't answer questions about a document as a whole ("what is this file
-    about?", "summarize it"): the question shares no words or meaning with any single passage.
+    For questions about a whole chapter ("explain this chapter", "what is this file about?"):
+    such a question matches no single passage, and the best search matches all come from one
+    or two places, while the chapter's definitions, theorems and examples run from its first
+    page to its last.
     """
     if not document_ids or limit <= 0:
         return []
-    per_document = max(1, limit // len(document_ids))
-    rows = await session.execute(
-        select(DocumentChunk, Document.filename)
-        .join(Document, Document.id == DocumentChunk.document_id)
-        .where(
-            Document.user_id == user_id,
-            Document.id.in_(document_ids),
-            DocumentChunk.chunk_index < per_document,
+    rows = (
+        await session.execute(
+            select(DocumentChunk.id, DocumentChunk.document_id)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(
+                library.readable_by(user_id),
+                Document.id.in_(document_ids),
+                DocumentChunk.chunk_index < FIGURE_CHUNK_BASE,  # the text, not figure descriptions
+            )
+            .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
         )
-        .order_by(DocumentChunk.chunk_index, Document.created_at)
-        .limit(limit)
-    )
-    return [
-        Evidence(chunk.id, chunk.document_id, filename, chunk.page, chunk.text, 0.0, "overview")
-        for chunk, filename in rows
-    ]
+    ).all()
+    by_document: dict[uuid.UUID, list[str]] = {}
+    for chunk_id, document_id in rows:
+        by_document.setdefault(document_id, []).append(chunk_id)
+    if not by_document:
+        return []
+    # An even share per document; a short document's unused share goes to the others.
+    chosen: list[str] = []
+    remaining, documents_left = limit, len(by_document)
+    for ids in sorted(by_document.values(), key=len):
+        share = remaining // documents_left
+        picked = evenly_spaced(ids, share)
+        chosen.extend(picked)
+        remaining -= len(picked)
+        documents_left -= 1
+    chunks = await _load_chunks(session, user_id, document_ids, chosen)
+    order = {document_id: n for n, document_id in enumerate(document_ids)}
+    ordered = sorted(chunks.values(), key=lambda c: (order.get(c[0].document_id, 0), c[0].chunk_index))
+    return [Evidence(c.id, c.document_id, name, c.page, c.text, 0.0, "overview") for c, name in ordered]
 
 
 async def sample_chunks(
@@ -242,7 +270,7 @@ async def sample_chunks(
             select(DocumentChunk.id)
             .join(Document, Document.id == DocumentChunk.document_id)
             .where(
-                Document.user_id == user_id,
+                library.readable_by(user_id),
                 Document.id.in_(document_ids),
                 DocumentChunk.chunk_index < FIGURE_CHUNK_BASE,  # quizzes come from the text
             )

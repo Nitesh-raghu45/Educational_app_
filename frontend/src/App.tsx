@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, describeError, getToken, setToken, setUnauthorizedHandler } from "./api";
 import AuthScreen from "./components/AuthScreen";
 import ChatView from "./components/ChatView";
+import LibraryManager from "./components/LibraryManager";
 import Sidebar from "./components/Sidebar";
 import { MenuIcon } from "./components/icons";
 import type { Section, Usage, User } from "./types";
@@ -14,12 +15,14 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
 
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
     setSections([]);
     setActiveId(null);
+    setLibraryOpen(false);
   }, []);
 
   useEffect(() => setUnauthorizedHandler(logout), [logout]);
@@ -67,6 +70,7 @@ export default function App() {
       setNotice(null);
       setSections((list) => [section, ...list]);
       setActiveId(section.id);
+      setLibraryOpen(false);
       setSidebarOpen(false);
     } catch (err) {
       setNotice(describeError(err, "Couldn't start a new chat."));
@@ -105,11 +109,17 @@ export default function App() {
         usage={usage}
         onSelect={(id) => {
           setActiveId(id);
+          setLibraryOpen(false);
           setSidebarOpen(false);
         }}
         onNewChat={newChat}
         onDelete={deleteChat}
         onLogout={logout}
+        libraryOpen={libraryOpen}
+        onOpenLibrary={() => {
+          setLibraryOpen(true);
+          setSidebarOpen(false);
+        }}
       />
       <div className="scrim" onClick={() => setSidebarOpen(false)} />
       <main className="main">
@@ -124,12 +134,16 @@ export default function App() {
             </button>
           </div>
         )}
-        {activeId ? (
+        {libraryOpen && user.is_admin ? (
+          <LibraryManager />
+        ) : activeId ? (
           <ChatView key={activeId} sectionId={activeId} onSectionChange={upsertSection} onNewChat={newChat} />
         ) : (
           <div className="empty-state">
             <h1>Study Assistant</h1>
-            <p className="muted">Upload your notes and ask questions answered only from your documents.</p>
+            <p className="muted">
+              Upload your notes, or add books from the shared library, and ask questions answered only from them.
+            </p>
             <button className="primary" onClick={newChat}>
               Start a new chat
             </button>

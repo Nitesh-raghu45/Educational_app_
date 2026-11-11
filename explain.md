@@ -80,7 +80,8 @@ DocumentsPanel.tsx ─POST /documents─▶ api/documents.upload_document
         ├ _find_same_file            same file uploaded before? → reuse it (no processing)
         ├ stored_files.save          copy of the file into MySQL (survives restarts)
         └ jobs.enqueue_ingestion ─▶ services/ingestion.ingest_document
-              extract_text (OCR if needed) → split_text into chunks
+              extract_text (OCR if needed; Symbol-font fix) → mathtext.read_math_pages
+              (math pages re-read as LaTeX by the vision model) → split_text into chunks
               → embedder.embed_documents → Pinecone upsert → chunks in MySQL
               → status "ready"  → figures.mark_processing
                     └▶ services/figures.process_document (background, minutes)
@@ -305,7 +306,10 @@ processed inside the API instead (`INGEST_MODE=inline`).
 | `_format`, `_events` | Format and loop over SSE events. |
 
 #### `figures.py`
-`get_figure`: returns a figure image, only to the student who owns its document.
+`get_figure`: returns a figure image, only to a student who may read its document (theirs, or a library book).
+
+#### `library.py`
+`list_library` (everyone), `add_to_library` and `remove_from_library` (admins only, via `admin_user`).
 
 #### `quizzes.py`
 `get_quiz` (questions without answers), `submit_attempt` (grade answers), `quiz_out` (hides the
@@ -330,8 +334,8 @@ correct answers until an attempt).
 #### `ingestion.py`: turning a file into searchable chunks
 | Function / class | What it does |
 |---|---|
-| `ingest_document` | The full pipeline: read text → chunk → embed → store in Pinecone and MySQL → mark ready → start figures. Marks the document failed with a readable message on problems. |
-| `extract_text` | Gets text page by page from PDF, DOCX, TXT/MD and images; uses OCR for images and scanned pages. |
+| `ingest_document` | The full pipeline: read text → re-read math pages as LaTeX → chunk → embed → store in Pinecone and MySQL → mark ready → start figures. Marks the document failed with a readable message on problems. |
+| `extract_text` | Gets text page by page from PDF, DOCX, TXT/MD and images; uses OCR for images and scanned pages, and turns Symbol-font characters back into real symbols. |
 | `ocr_image`, `_ocr_pdf_pages`, `_tesseract_languages` | OCR with Tesseract, using only the installed languages, after cleaning up the image. |
 | `split_text`, `_split_pieces` | Splits text into chunks, keeping paragraphs/sentences whole when they fit. |
 | `chunk_pages` | Chunks every page, remembering page numbers. |
@@ -339,6 +343,35 @@ correct answers until an attempt).
 | `reembed_document` | Re-embeds a document with a new embedding model (from the file, or from stored chunk text if the file is gone). |
 | `_record_embedding_model` | Notes which embedding model a document was embedded with. |
 | `IngestionError`, `Chunk`, `StepTimer` | A file problem shown to the student; one chunk; timing log for each upload. |
+
+#### `vision.py`: vision models and their rate limits
+| Function / class | What it does |
+|---|---|
+| `VisionChain` | Tries Groq, then each Gemini model in `GEMINI_VISION_MODELS` (each has its own free daily limit); pauses a provider that hits a rate limit; waits out short limits and raises `VisionQuotaExceeded` for long ones, so the work is deferred. |
+| `GroqVision`, `GeminiVision` | The two providers: `describe` a figure (JSON) and `transcribe` a page (text with LaTeX). |
+| `parse_retry_after` | Reads waits like "try again in 19m30.72s" from rate-limit errors. |
+| `create_vision` | Builds the chain from the API keys that are set. |
+
+Deferred work is finished by `main.retry_vision_backlog` (every `VISION_RETRY_MINUTES`): documents in
+`vision_backlog` are processed again (saved `page_transcripts` cost nothing), then figures in status `waiting`.
+
+#### `library.py`: the shared library
+| Function | What it does |
+|---|---|
+| `readable_by` | SQL condition for "documents this user may read": their own, or the library's. Used for attaching, retrieval, keyword search, quizzes and figures. |
+| `search_owners`, `vector_owner`, `LIBRARY_OWNER` | Library vectors are tagged `"library"` instead of a user id, so a search matches "mine or the library's" without a database query. |
+| `get_readable_document` | A document the user may read, or 404. |
+| `require_admin`, `is_admin_id` | Admin checks: by email in `ADMIN_EMAILS` (`User.is_admin`), or by user id with a one-minute cache (used by daily limits, which admins skip). |
+| `list_library`, `share`, `library_flags` | List library books (users see ready ones), put a document in the library, mark documents that are in it. |
+
+#### `mathtext.py`: math-heavy PDFs (e.g. NCERT textbooks)
+| Function | What it does |
+|---|---|
+| `fix_symbol_font` | Maps Symbol-font private-use characters (U+F020–U+F0FF) back to ∠ Δ = − × α … so the answer model and keyword search can read them. |
+| `needs_math_reading` | Spots pages whose text layer lost its math layout (many math symbols, or fractions split over lines). |
+| `read_math_pages` | Renders those pages (`render_pages`) and has the vision model transcribe them with math in LaTeX (`PAGE_PROMPT`); up to `MATH_VISION_MAX_PAGES` per document and `DAILY_MATH_PAGE_LIMIT` per student per day. Pages it can't read keep their text. |
+| `_accept` | Rejects empty or much-too-short transcripts (a refusal or cut-off reply). |
+| `_reserve`, `_refund` | Count a page against the daily limit; give it back if reading failed. |
 
 #### `stored_files.py`: uploads kept in MySQL
 Render's free plan wipes the disk on restart, so each upload is also stored in the database.
@@ -375,7 +408,7 @@ client must provide.
 #### `keyword.py`: keyword search (BM25)
 | Function | What it does |
 |---|---|
-| `tokenize` | Splits text into lowercase words, drops stopwords, trims word endings. |
+| `tokenize` | Splits text into lowercase words, drops stopwords and LaTeX layout words, trims word endings. `x²`, `x2` and `x^{2}` all become `x2`; section numbers like `6.1` stay whole (plus their parts). |
 | `_build_index`, `_indexes`, `_DocumentIndex` | Builds and caches a word index per document (rebuilt when the document changes). |
 | `keyword_search` | Scores chunks by matching words (BM25); needs at least 2 matching words for longer questions. |
 
@@ -390,7 +423,8 @@ client must provide.
 | `_timed` | Times one search step for the timing log. |
 | `attach_figures` | Marks passages that describe a figure, so the answer can show the image. |
 | `format_sources`, `_defuse` | Puts passages into the prompt as `<source id="n">`, neutralising any text that looks like instructions. |
-| `leading_chunks` | Opening passages of each document (for "summarise this document" questions). |
+| `evenly_spaced` | Picks N items spread evenly from first to last. |
+| `spread_chunks` | Passages spread evenly through each document, in reading order (for whole-chapter questions: "explain this chapter", "summarise this document"). `rag.chapter_evidence` combines them with the best search matches within `OVERVIEW_PROMPT_CHARS`, and `rag.CHAPTER_RULES` tells the model to teach the whole chapter. |
 | `sample_chunks` | A random spread of passages (for quizzes without a topic). |
 | `Evidence` | One retrieved passage; `.citation()` turns it into a citation for the website. |
 
@@ -421,7 +455,7 @@ client must provide.
 | Function | What it does |
 |---|---|
 | `process_document` | Extract → describe → store → index all figures of a document (never breaks the document if it fails). |
-| `extract_candidates` | Finds images in PDFs (`_pdf_candidates`, `_vector_region` for drawn diagrams) and DOCX (`_docx_candidates`); skips icons, strips and repeated logos. |
+| `extract_candidates` | Finds images in PDFs (`_pdf_candidates`) and DOCX (`_docx_candidates`); skips icons, strips, whole-page images and repeated logos. Drawn diagrams are found by `_vector_regions`: shapes that touch are grouped (`cluster_boxes`), and each big enough group becomes its own figure, so header rules and fraction bars don't turn the whole page into one "figure". |
 | `_describe` | Asks the vision model for a title/description; past the daily limit or on failure, keeps captioned figures by their caption. |
 | `caption_from_context` | Reads captions like "Fig: Bluetooth Piconet" from the page. |
 | `_reserve_caption`, `_parse_caption` | Count against the daily limit; validate the model's JSON reply. |
@@ -450,7 +484,7 @@ client must provide.
 #### `llm.py`: Groq AI clients
 `GroqLLM.stream` (answer word by word), `GroqLLM.complete` (one-shot replies: rewrites, quizzes,
 summaries), `_reasoning_options` (controls the model's thinking). `GroqVision.describe` describes
-a figure image. `ModelBusy` signals "rate-limited/overloaded, try another model".
+a figure image; `GroqVision.transcribe` transcribes a math-heavy page into text with LaTeX. `ModelBusy` signals "rate-limited/overloaded, try another model".
 
 #### `sections.py`: chats and the question quota
 | Function | What it does |
@@ -468,7 +502,7 @@ a real passage and has one correct option), `get_owned_quiz`, `submit_attempt` (
 #### `usage.py`: daily limits
 | Function | What it does |
 |---|---|
-| `reserve` | Counts one action (question, quiz, upload, chat, figure) against today's limit, or raises 429. |
+| `reserve` | Counts one action (question, quiz, upload, chat, figure, math page) against today's limit, or raises 429. |
 | `refund` | Gives one back when the action failed. |
 | `get_usage` | Today's counts and limits for the website. |
 | `limit_for`, `today`, `resets_at` | The limit for an action; today's UTC date; when it resets (midnight UTC). |
@@ -513,11 +547,12 @@ TypeScript shapes matching the API: `User`, `Section`, `Message`, `Citation`, `W
 | File | What it shows / does |
 |---|---|
 | `AuthScreen.tsx` | Login and sign-up form. |
-| `Sidebar.tsx` | Chat list, "New chat", and `UsageMeter` (today's limits). |
+| `Sidebar.tsx` | Chat list, "New chat", "Manage library" (admins), and `UsageMeter` (today's limits). |
+| `LibraryManager.tsx` | Admin page: upload chapters to the shared library with a class and subject, watch processing, delete books. |
 | `ChatView.tsx` | One chat: messages, question box, sending a question and streaming the answer, retry, polling documents while they process. |
 | `MessageBubble.tsx` | One message with its sources list and a copy button. |
 | `AnswerMarkdown.tsx` | Renders an answer: markdown, tables, math (KaTeX), citation chips with previews, and visual blocks (Mermaid diagrams, charts, figures, web pictures). Memoized so typing doesn't redraw answers. |
-| `DocumentsPanel.tsx` | Upload with progress bars, document status, figure progress, duplicate notices, attach documents from other chats. |
+| `DocumentsPanel.tsx` | Upload with progress bars, document status, figure progress, duplicate notices, attach documents from other chats, and the **Shared library** (grouped by class and subject; add a whole book or single chapters). |
 | `FigureBlock.tsx` | Loads a document figure (with the token) and shows it with title and page. |
 | `WebImageBlock.tsx` | Shows a web picture with its source link. |
 | `MermaidBlock.tsx` | Draws Mermaid diagrams (library loaded only when needed). |
@@ -576,6 +611,7 @@ All paths start with `/api/v1`. Everything except register/login needs `Authoriz
 | `POST /sections/{id}/retry/{message_id}` | Retry a failed answer |
 | `GET/POST /sections/{id}/documents`, `DELETE /sections/{id}/documents/{doc_id}` | Documents in a chat |
 | `POST /documents`, `GET /documents`, `GET /documents/{id}/status`, `DELETE /documents/{id}` | Upload and manage documents |
+| `GET /library`, `POST /library`, `DELETE /library/{id}` | Shared library: list (everyone); add a book with `grade` and `subject`, or delete one (admins) |
 | `GET /figures/{id}` | A figure image |
 | `POST /sections/{id}/quizzes`, `GET /quizzes/{id}`, `POST /quizzes/{id}/attempts` | Quizzes |
 | `GET /health` (no prefix) | Server health check |
@@ -596,6 +632,9 @@ Frontend: `cd frontend && npm test`.
 | `test_quiz_and_ingestion.py` | Chunking and quizzes. |
 | `test_multilingual_ocr_safety.py` | OCR languages, missing Tesseract, partial OCR. |
 | `test_figures.py` | Figure extraction, descriptions, captions, daily limit, refunds, access control. |
+| `test_library.py` | Shared library: admins add books, every user asks about them, only admins change it, own uploads stay private, admins have no limits, library figures. |
+| `test_vision_limits.py` | Groq → Gemini fallback, waiting out short limits, deferring at daily limits and finishing later, saved transcripts reused, figure captions from transcripts. |
+| `test_math_documents.py` | Symbol-font fix, LaTeX page reading (limits, failures, refunds), math-aware keyword tokens, per-diagram vector figures. |
 | `test_duplicate_uploads.py` | Re-uploading the same file reuses the document and restores lost figures. |
 | `test_stored_files.py` | Files restored from MySQL after a restart wipes the disk. |
 | `test_web_images.py` | When to search for pictures, time limits, caching, relevance. |

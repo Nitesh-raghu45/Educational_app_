@@ -1,5 +1,6 @@
-"""Document ingestion: parse (+ OCR for images and scanned PDF pages) -> recursive token-aware
-chunking -> embed (multilingual MiniLM, local) -> upsert to Pinecone -> mark ready."""
+"""Document ingestion: parse (+ OCR for images and scanned PDF pages, + the vision model for
+math-heavy PDF pages) -> recursive token-aware chunking -> embed (multilingual MiniLM, local) ->
+upsert to Pinecone -> mark ready."""
 
 import asyncio
 import logging
@@ -15,8 +16,8 @@ from sqlalchemy import delete, select
 
 from ..config import get_settings
 from ..db import SessionLocal
-from ..models import Document, DocumentChunk, DocumentEmbedding, utcnow
-from . import figures, providers, stored_files
+from ..models import Document, DocumentChunk, DocumentEmbedding, VisionBacklog, utcnow
+from . import figures, library, mathtext, providers, stored_files
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,11 @@ def extract_text(path: Path) -> tuple[list[tuple[int | None, str]], int]:
     if ext == ".pdf":
         from pypdf import PdfReader
 
-        pages = [(i, page.extract_text() or "") for i, page in enumerate(PdfReader(str(path)).pages, 1)]
+        with path.open("rb") as f:  # closed right away (Windows can't delete an open file)
+            pages = [
+                (i, mathtext.fix_symbol_font(page.extract_text() or ""))
+                for i, page in enumerate(PdfReader(f).pages, 1)
+            ]
         scanned = [n for n, text in pages if len(_WHITESPACE_RE.sub("", text)) < MIN_PAGE_TEXT_CHARS]
         if not scanned:
             return pages, 0
@@ -112,7 +117,7 @@ def extract_text(path: Path) -> tuple[list[tuple[int | None, str]], int]:
         for table in doc.tables:
             for row in table.rows:
                 parts.append(" | ".join(cell.text for cell in row.cells))
-        return [(None, "\n".join(parts))], 0
+        return [(None, mathtext.fix_symbol_font("\n".join(parts)))], 0
     if ext in (".txt", ".md"):
         return [(None, path.read_text(encoding="utf-8", errors="replace"))], 0
     if ext in (".png", ".jpg", ".jpeg"):
@@ -230,11 +235,19 @@ async def ingest_document(document_id: uuid.UUID) -> None:
                 raise IngestionError("The uploaded file is no longer on the server (it restarted). Please upload it again.")
             pages, ocr_pages = await asyncio.to_thread(extract_text, Path(doc.storage_path))
             timer.lap("parse+ocr" if ocr_pages else "parse")
+            reading = await mathtext.read_math_pages(Path(doc.storage_path), pages, doc.user_id, doc.id, doc.filename)
+            math_pages = reading.texts
+            if math_pages:
+                pages = [(n, math_pages.get(n, text)) for n, text in pages]
+                timer.lap("math pages")
             embedder = providers.embedder()
             size, overlap, length = chunking_for(embedder)
             chunks = await asyncio.to_thread(chunk_pages, pages, size, overlap, length)
             timer.lap("chunk")
-            details += f", {len(pages)} page(s){f', {ocr_pages} via OCR' if ocr_pages else ''}, {len(chunks)} chunks"
+            details += f", {len(pages)} page(s){f', {ocr_pages} via OCR' if ocr_pages else ''}"
+            details += f"{f', {len(math_pages)} math page(s) via vision' if math_pages else ''}, {len(chunks)} chunks"
+            if reading.deferred:
+                details += f", {reading.deferred} math page(s) left for later (vision rate limits)"
             if not chunks:
                 raise IngestionError(
                     "No text could be found, even with text recognition. If it's a photo or scan, "
@@ -255,14 +268,21 @@ async def ingest_document(document_id: uuid.UUID) -> None:
                 DocumentChunk(id=f"{doc.id.hex}-{i}", document_id=doc.id, chunk_index=i, page=c.page, text=c.text)
                 for i, c in enumerate(chunks)
             ]
+            owner = await library.vector_owner(session, doc)
             items = [
-                (row.id, vector, providers.vector_metadata(doc.user_id, doc.id, row.chunk_index, row.page))
+                (row.id, vector, providers.vector_metadata(owner, doc.id, row.chunk_index, row.page))
                 for row, vector in zip(rows, vectors)
             ]
             await asyncio.to_thread(providers.vector_store().upsert, namespace, items)
             timer.lap("pinecone")
             session.add_all(rows)
             await _record_embedding_model(session, doc.id, settings.embedding_model)
+            # Math pages left for later (rate limits): answerable from the text layer meanwhile,
+            # and processed again by main.retry_vision_backlog once the quota is back.
+            if reading.deferred:
+                await session.merge(VisionBacklog(document_id=doc.id, pages_left=reading.deferred, updated_at=utcnow()))
+            else:
+                await session.execute(delete(VisionBacklog).where(VisionBacklog.document_id == doc.id))
             await figures.mark_processing(session, doc.id)
             doc.status, doc.chunk_count, doc.updated_at = "ready", len(rows), utcnow()
             await session.commit()
@@ -278,7 +298,12 @@ async def ingest_document(document_id: uuid.UUID) -> None:
                 await session.commit()
             return
     # The text is ready and answerable now; figures are added afterwards.
-    await figures.process_document(document_id)
+    if get_settings().figures_enabled:
+        await figures.process_document(document_id)
+    else:
+        async with SessionLocal() as session:
+            if await session.get(VisionBacklog, document_id) is None:
+                await stored_files.release(session, document_id)  # nothing more needs the file
 
 
 async def _record_embedding_model(session, document_id: uuid.UUID, model: str) -> None:
@@ -311,8 +336,9 @@ async def reembed_document(document_id: uuid.UUID) -> None:
             )
             vectors = await asyncio.to_thread(providers.embedder().embed_documents, [c.text for c in chunks])
             timer.lap("embed")
+            owner = await library.vector_owner(session, doc)
             items = [
-                (c.id, v, providers.vector_metadata(doc.user_id, doc.id, c.chunk_index, c.page))
+                (c.id, v, providers.vector_metadata(owner, doc.id, c.chunk_index, c.page))
                 for c, v in zip(chunks, vectors)
             ]
             await asyncio.to_thread(providers.vector_store().upsert, providers.namespace_for(), items)

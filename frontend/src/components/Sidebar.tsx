@@ -42,21 +42,30 @@ interface Props {
   onNewChat: () => void;
   onDelete: (id: string) => void;
   onLogout: () => void;
+  libraryOpen: boolean;
+  onOpenLibrary: () => void;
 }
 
-export default function Sidebar({ sections, activeId, user, usage, onSelect, onNewChat, onDelete, onLogout }: Props) {
+export default function Sidebar({
+  sections, activeId, user, usage, onSelect, onNewChat, onDelete, onLogout, libraryOpen, onOpenLibrary,
+}: Props) {
   return (
     <aside className="sidebar">
       <button className="new-chat" onClick={onNewChat}>
         <PlusIcon /> New chat
       </button>
+      {user.is_admin && (
+        <button className={`sidebar-link ${libraryOpen ? "active" : ""}`} onClick={onOpenLibrary}>
+          Manage library
+        </button>
+      )}
       <div className="sidebar-label">Chats</div>
       <nav className="section-list">
         {sections.length === 0 && <div className="muted small pad">No chats yet</div>}
         {sections.map((s) => (
           <div
             key={s.id}
-            className={`section-item ${s.id === activeId ? "active" : ""}`}
+            className={`section-item ${s.id === activeId && !libraryOpen ? "active" : ""}`}
             onClick={() => onSelect(s.id)}
             title={s.title ?? "New chat"}
           >

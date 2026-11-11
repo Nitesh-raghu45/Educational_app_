@@ -21,6 +21,7 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     email: str
+    is_admin: bool = False
 
 
 class TokenOut(BaseModel):
@@ -86,6 +87,12 @@ class DocumentOut(BaseModel):
     # On upload only: "existing" when the same file was already in the student's library (that
     # document was attached instead), "already_in_chat" when it was already attached.
     duplicate: str | None = None
+    # In the shared library (uploaded by an admin, readable by everyone), with its class and subject.
+    library: bool = False
+    grade: str | None = None
+    subject: str | None = None
+    # Math pages waiting for the vision models' rate limits (answers use the plain text meanwhile).
+    vision_pending: bool = False
 
 
 class AttachDocument(BaseModel):

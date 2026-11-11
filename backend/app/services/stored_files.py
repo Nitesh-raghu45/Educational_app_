@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..models import Document, DocumentFilePart
 
 logger = logging.getLogger(__name__)
@@ -74,3 +75,13 @@ async def ensure_local(session: AsyncSession, doc: Document) -> bool:
 
 async def remove(session: AsyncSession, document_id: uuid.UUID) -> None:
     await session.execute(delete(DocumentFilePart).where(DocumentFilePart.document_id == document_id))
+
+
+async def release(session: AsyncSession, document_id: uuid.UUID) -> None:
+    """Delete the copy of a fully processed document (text and figures), unless KEEP_FILE_COPIES:
+    it's the largest thing in the database and isn't needed again. Re-embedding works from the
+    stored chunk text; re-uploading the same file brings a copy back when one is needed."""
+    if get_settings().keep_file_copies:
+        return
+    await remove(session, document_id)
+    await session.commit()

@@ -37,9 +37,9 @@ class QueryIndex:
 def test_query_is_limited_to_the_owner_and_their_documents():
     store = PineconeStore(Settings(pinecone_api_key="x"))
     store._index = QueryIndex()
-    store.query("docs--m", [0.0], 5, "user-a", ["doc-1"])
+    store.query("docs--m", [0.0], 5, ["user-a", "library"], ["doc-1"])
     assert store._index.kwargs["namespace"] == "docs--m"
-    assert store._index.kwargs["filter"] == {"user_id": "user-a", "document_id": {"$in": ["doc-1"]}}
+    assert store._index.kwargs["filter"] == {"user_id": {"$in": ["user-a", "library"]}, "document_id": {"$in": ["doc-1"]}}
 
 
 class MigrationIndex:

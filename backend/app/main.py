@@ -8,11 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from .api import auth, documents, figures, quizzes, sections
+from .api import auth, documents, figures, library, quizzes, sections
 from .config import get_settings
 from .db import SessionLocal, create_tables, engine
 from .errors import AppError
-from .models import Document, DocumentEmbedding, DocumentFilePart, FigureScan
+from .models import Document, DocumentEmbedding, DocumentFilePart, FigureScan, VisionBacklog
 from .ratelimit import get_redis
 from .services import documents as document_service
 from .services import jobs, providers, web_images
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
     jobs.spawn(reembed_outdated_documents())
     jobs.spawn(backfill_figures())
     jobs.spawn(document_service.backfill_hashes())
+    jobs.spawn(retry_vision_backlog())
     jobs.spawn(web_images.warm_up())
     yield
     await engine.dispose()
@@ -131,6 +132,57 @@ async def backfill_figures() -> None:
         logger.warning("Could not check documents for figures", exc_info=True)
 
 
+_vision_retries: set = set()  # documents already queued by retry_vision_backlog
+
+
+async def retry_vision_once() -> int:
+    """Queue the work that waits for the vision models (math pages, then figures) if some vision
+    provider can take requests again. Returns how many documents were queued."""
+    vision = providers.vision()
+    if not getattr(vision, "available", lambda: True)():
+        return 0
+    async with SessionLocal() as session:
+        backlog = set(
+            await session.scalars(
+                select(VisionBacklog.document_id).join(Document, Document.id == VisionBacklog.document_id).where(Document.status == "ready")
+            )
+        )
+        waiting = set(
+            await session.scalars(
+                select(FigureScan.document_id).join(Document, Document.id == FigureScan.document_id)
+                .where(FigureScan.status == "waiting", Document.status == "ready")
+            )
+        )
+    queued = 0
+
+    def forget(document_id):
+        return lambda _task: _vision_retries.discard(document_id)
+
+    # Math pages first: reprocessing reads them (saved pages cost nothing) and then the figures.
+    for document_id in sorted(backlog - _vision_retries, key=str):
+        _vision_retries.add(document_id)
+        jobs.spawn(jobs._ingest_inline(document_id)).add_done_callback(forget(document_id))
+        queued += 1
+    for document_id in sorted(waiting - backlog - _vision_retries, key=str):
+        _vision_retries.add(document_id)
+        jobs.spawn(jobs._figures_inline(document_id)).add_done_callback(forget(document_id))
+        queued += 1
+    if queued:
+        logger.info("Retrying vision work for %d document(s) that waited for rate limits", queued)
+    return queued
+
+
+async def retry_vision_backlog() -> None:
+    """Every VISION_RETRY_MINUTES, finish work that waited for the vision models' rate limits."""
+    await asyncio.sleep(30)  # let startup settle
+    while True:
+        try:
+            await retry_vision_once()
+        except Exception:
+            logger.warning("Could not check work waiting for the vision models", exc_info=True)
+        await asyncio.sleep(max(get_settings().vision_retry_minutes, 1) * 60)
+
+
 async def resume_unfinished_ingestion() -> None:
     """Documents left pending/processing by a restart (e.g. Render spinning down mid-upload) would
     otherwise show "processing" forever. Process them again; if the file was lost with the
@@ -151,7 +203,9 @@ async def warm_up() -> None:
     try:
         await asyncio.to_thread(providers.embedder().embed_query, "warm up")
         if settings.pinecone_api_key:
-            await asyncio.to_thread(providers.vector_store().query, "warm-up", [0.0] * settings.embedding_dim, 1, ["-"])
+            await asyncio.to_thread(
+                providers.vector_store().query, providers.namespace_for(), [0.0] * settings.embedding_dim, 1, ["-"], ["-"]
+            )
         logger.info("Warm-up complete: embedding model loaded, vector store connected")
     except Exception:
         logger.warning("Warm-up failed; models will load on first use", exc_info=True)
@@ -205,7 +259,9 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=exc.to_body())
 
 
-for router in (auth.router, auth.usage_router, sections.router, documents.router, figures.router, quizzes.router):
+for router in (
+    auth.router, auth.usage_router, sections.router, documents.router, library.router, figures.router, quizzes.router
+):
     app.include_router(router, prefix="/api/v1")
 
 

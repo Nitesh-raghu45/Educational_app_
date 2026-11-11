@@ -1,5 +1,6 @@
 import { ChangeEvent, Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
 import { api, describeError } from "../api";
+import { bookTitle, matches, shelves } from "../library";
 import type { DocumentInfo } from "../types";
 import { CloseIcon } from "./icons";
 
@@ -28,6 +29,9 @@ function formatSize(bytes: number): string {
 
 export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose }: Props) {
   const [library, setLibrary] = useState<DocumentInfo[]>([]);
+  const [shared, setShared] = useState<DocumentInfo[]>([]);
+  const [query, setQuery] = useState("");
+  const [adding, setAdding] = useState(false);
   const [inFlight, setInFlight] = useState<InFlight[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -36,6 +40,10 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
   useEffect(() => {
     api.listDocuments().then(setLibrary).catch(() => {});
   }, [docs.length]);
+
+  useEffect(() => {
+    api.listLibrary().then(setShared).catch(() => {});
+  }, []);
 
   async function uploadOne(file: File) {
     const key = `${file.name}-${file.size}-${Math.random()}`;
@@ -70,8 +78,23 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
   }
 
   async function attach(documentId: string) {
-    const doc = await api.attachDocument(sectionId, documentId);
-    onDocsChange((current) => [...current, doc]);
+    setError(null);
+    try {
+      const doc = await api.attachDocument(sectionId, documentId);
+      onDocsChange((current) => [...current.filter((d) => d.id !== doc.id), doc]);
+    } catch (err) {
+      setError(describeError(err, "Couldn't add that document."));
+    }
+  }
+
+  /** A whole book: its chapters are added together. */
+  async function attachAll(documentIds: string[]) {
+    setAdding(true);
+    try {
+      await Promise.all(documentIds.map(attach));
+    } finally {
+      setAdding(false);
+    }
   }
 
   async function detach(documentId: string) {
@@ -135,6 +158,7 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
               )}
               <div className="doc-meta">
                 <span className={`status ${d.status}`}>{working ? "processing" : d.status}</span>
+                {d.library && <span className="tag">Library</span>}
                 <span className="small muted">
                   {working ? "Reading & indexing… (large files can take a minute)" : formatSize(d.size_bytes)}
                   {d.status === "ready" ? ` · ${d.chunk_count} chunks` : ""}
@@ -142,12 +166,17 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
                     ? ` · ${d.figure_count} figure${d.figure_count === 1 ? "" : "s"}`
                     : ""}
                 </span>
+                {d.status === "ready" && (d.vision_pending || d.figure_status === "waiting") && (
+                  <span className="small muted" title="The AI picture reader is at its daily limit; this finishes automatically">
+                    · {d.vision_pending ? "math & figures" : "figures"} finishing later
+                  </span>
+                )}
                 {d.status === "ready" && d.figure_status === "processing" && (
                   <span className="small muted busy-label">
                     <span className="spinner" aria-hidden="true" /> finding figures…
                   </span>
                 )}
-                {d.status === "ready" && (d.figure_status === null || d.figure_status === "failed") && HAS_PICTURES.test(d.filename) && (
+                {d.status === "ready" && !d.library && (d.figure_status === null || d.figure_status === "failed") && HAS_PICTURES.test(d.filename) && (
                   <span className="small muted" title="Uploaded before figure extraction, or extraction failed">
                     · figures not extracted: upload again to get them
                   </span>
@@ -179,6 +208,57 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
               </li>
             ))}
           </ul>
+        </>
+      )}
+
+      {shared.length > 0 && (
+        <>
+          <h4>Shared library</h4>
+          <p className="small muted">Books everyone can use. Add a whole book, or only the chapters you need.</p>
+          {shared.length > 6 && (
+            <input
+              type="search"
+              placeholder="Search, e.g. class 10 or physics"
+              aria-label="Search the shared library"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          )}
+          {shelves(shared.filter((d) => matches(d, query))).map((shelf) => {
+            const missing = shelf.docs.filter((d) => !attachedIds.has(d.id));
+            return (
+              <details key={shelf.key} className="shelf" open={query.trim() ? true : undefined}>
+                <summary>
+                  <span className="ellipsis">{shelf.label}</span>
+                  <span className="badge">{shelf.docs.length}</span>
+                </summary>
+                <button
+                  className="secondary small"
+                  disabled={missing.length === 0 || adding}
+                  onClick={() => attachAll(missing.map((d) => d.id))}
+                >
+                  {missing.length === 0 ? "All chapters added" : `Add all ${missing.length} to chat`}
+                </button>
+                <ul className="doc-list">
+                  {shelf.docs.map((d) => (
+                    <li key={d.id} className="shelf-row">
+                      <span className="doc-name ellipsis" title={d.filename}>
+                        {bookTitle(d)}
+                      </span>
+                      {attachedIds.has(d.id) ? (
+                        <span className="small muted">Added</span>
+                      ) : (
+                        <button className="secondary small" disabled={adding} onClick={() => attach(d.id)}>
+                          Add
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            );
+          })}
+          {query.trim() && !shared.some((d) => matches(d, query)) && <div className="small muted">No books match.</div>}
         </>
       )}
     </aside>

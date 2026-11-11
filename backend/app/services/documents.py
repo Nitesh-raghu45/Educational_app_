@@ -11,8 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import storage
 from ..config import get_settings
 from ..errors import AppError
-from ..models import Document, DocumentChunk, DocumentFigure, DocumentHash, FigureImage, FigureScan, SectionDocument
-from . import figures, providers, stored_files, usage
+from ..models import (
+    Document,
+    DocumentChunk,
+    DocumentFigure,
+    DocumentHash,
+    FigureImage,
+    FigureScan,
+    LibraryDocument,
+    PageTranscript,
+    SectionDocument,
+    VisionBacklog,
+)
+from . import figures, library, providers, stored_files, usage
 from .sections import get_owned_section
 
 logger = logging.getLogger(__name__)
@@ -128,14 +139,6 @@ async def _reuse(
     already = section_id is not None and await session.get(SectionDocument, (section_id, doc.id)) is not None
     if section_id is not None and not already:
         session.add(SectionDocument(section_id=section_id, document_id=doc.id))
-    if not await stored_files.has_copy(session, doc.id):
-        # Uploaded before copies were kept in the database. If the server also lost the file
-        # (e.g. a restart on Render), keep this upload instead; either way, keep a copy now.
-        if not Path(doc.storage_path).exists():
-            doc.storage_path = str(new_path)
-        await stored_files.save(session, doc.id, Path(doc.storage_path))
-    if doc.storage_path != str(new_path):
-        storage.delete(str(new_path))
     # Figures never extracted (uploaded before figure extraction existed), extraction failed, or
     # their images were lost (kept on a disk a restart wiped): now that the file is here, extract them.
     scan = await session.get(FigureScan, doc.id)
@@ -144,6 +147,16 @@ async def _reuse(
         and get_settings().figures_enabled
         and (scan is None or scan.status == "failed" or await _figure_images_missing(session, doc.id))
     )
+    if not await stored_files.has_copy(session, doc.id):
+        # No copy in the database: released after processing, or uploaded before copies were
+        # kept. If the server also lost the file (e.g. a restart on Render), keep this upload
+        # instead, and keep a copy while something still has to process it.
+        if not Path(doc.storage_path).exists():
+            doc.storage_path = str(new_path)
+        if extract or doc.status != "ready" or get_settings().keep_file_copies:
+            await stored_files.save(session, doc.id, Path(doc.storage_path))
+    if doc.storage_path != str(new_path):
+        storage.delete(str(new_path))
     if extract:
         await figures.mark_processing(session, doc.id)
     await session.commit()
@@ -188,16 +201,27 @@ async def backfill_hashes() -> None:
 
 
 async def with_figure_counts(session: AsyncSession, docs: list[Document]) -> list[Document]:
-    """Adds `figure_status` and `figure_count` (read by DocumentOut) to each document."""
-    counts = await figures.figure_counts(session, [d.id for d in docs])
+    """Adds `figure_status`, `figure_count`, `vision_pending` and the library fields `library`,
+    `grade` and `subject` (read by DocumentOut) to each document."""
+    ids = [d.id for d in docs]
+    counts = await figures.figure_counts(session, ids)
+    shared = await library.library_flags(session, ids)
+    pending = set(await session.scalars(select(VisionBacklog.document_id).where(VisionBacklog.document_id.in_(ids)))) if ids else set()
     for doc in docs:
+        doc.vision_pending = doc.id in pending
         doc.figure_status, doc.figure_count = counts.get(doc.id, (None, 0))
+        entry = shared.get(doc.id)
+        doc.library = entry is not None
+        doc.grade, doc.subject = (entry.grade, entry.subject) if entry else (None, None)
     return docs
 
 
 async def list_documents(session: AsyncSession, user_id: uuid.UUID) -> list[Document]:
+    """The user's own documents (an admin's library uploads are listed by the library)."""
     rows = await session.scalars(
-        select(Document).where(Document.user_id == user_id).order_by(Document.created_at.desc())
+        select(Document)
+        .where(Document.user_id == user_id, Document.id.not_in(select(LibraryDocument.document_id)))
+        .order_by(Document.created_at.desc())
     )
     return await with_figure_counts(session, list(rows))
 
@@ -215,7 +239,7 @@ async def section_documents(session: AsyncSession, section_id: uuid.UUID, user_i
 
 async def attach(session: AsyncSession, section_id: uuid.UUID, document_id: uuid.UUID, user_id: uuid.UUID) -> Document:
     await get_owned_section(session, section_id, user_id)
-    doc = await get_owned_document(session, document_id, user_id)
+    doc = await library.get_readable_document(session, document_id, user_id)  # theirs, or the library's
     if await session.get(SectionDocument, (section_id, document_id)) is None:
         session.add(SectionDocument(section_id=section_id, document_id=document_id))
         await session.commit()
@@ -242,6 +266,9 @@ async def delete_document(session: AsyncSession, document_id: uuid.UUID, user_id
     await session.execute(delete(SectionDocument).where(SectionDocument.document_id == doc.id))
     await session.execute(delete(FigureScan).where(FigureScan.document_id == doc.id))
     await session.execute(delete(DocumentHash).where(DocumentHash.document_id == doc.id))
+    await session.execute(delete(LibraryDocument).where(LibraryDocument.document_id == doc.id))
+    await session.execute(delete(PageTranscript).where(PageTranscript.document_id == doc.id))
+    await session.execute(delete(VisionBacklog).where(VisionBacklog.document_id == doc.id))
     await stored_files.remove(session, doc.id)
     await session.execute(delete(Document).where(Document.id == doc.id))
     await session.commit()

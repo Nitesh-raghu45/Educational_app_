@@ -25,6 +25,10 @@ services:
         sync: false
       - key: CORS_ORIGINS         # ["https://<your edu-web name>.onrender.com"]
         sync: false
+      - key: ADMIN_EMAILS         # your email: adds books to the shared library
+        sync: false
+      - key: GEMINI_API_KEY       # optional: vision fallback when Groq's daily limit is reached
+        sync: false
       # Optional: Google Images results via Serper.dev (Wikipedia pictures work without it).
       - key: SERPER_API_KEY
         sync: false

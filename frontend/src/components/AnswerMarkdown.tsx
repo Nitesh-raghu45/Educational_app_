@@ -4,7 +4,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import type { Citation } from "../types";
-import { CITE_LINK, prepareAnswer } from "../visuals/markdownPrep";
+import { CITE_LINK, prepareAnswer, remarkBreakTags } from "../visuals/markdownPrep";
 import ChartBlock from "./ChartBlock";
 import FigureBlock from "./FigureBlock";
 import WebImageBlock from "./WebImageBlock";
@@ -108,7 +108,7 @@ interface Props {
   streaming?: boolean;
 }
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreakTags];
 const REHYPE_PLUGINS = [rehypeKatex];
 
 /** Memoized: typing in the message box re-renders the chat, and re-rendering every answer would
