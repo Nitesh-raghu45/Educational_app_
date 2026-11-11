@@ -171,6 +171,9 @@ export const api = {
   detachDocument: (sectionId: string, documentId: string) =>
     request<void>("DELETE", `/sections/${sectionId}/documents/${documentId}`),
 
+  /** Which library chapters a chat studies; returns all of the chat's documents. */
+  setLibraryDocuments: (sectionId: string, documentIds: string[]) =>
+    request<DocumentInfo[]>("PUT", `/sections/${sectionId}/library`, { document_ids: documentIds }),
   listLibrary: () => request<DocumentInfo[]>("GET", "/library"),
   /** Admins only. */
   addToLibrary: (file: File, grade: string, subject: string, onProgress?: (fraction: number) => void) => {

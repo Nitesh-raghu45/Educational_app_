@@ -52,6 +52,32 @@ export const SendIcon = () => (
   </Icon>
 );
 
+export const PaperclipIcon = () => (
+  <Icon>
+    <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" />
+  </Icon>
+);
+
+export const CameraIcon = () => (
+  <Icon>
+    <path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
+    <circle cx="12" cy="13" r="3.5" />
+  </Icon>
+);
+
+export const BookIcon = () => (
+  <Icon>
+    <path d="M4 5a2 2 0 0 1 2-2h13v15H6a2 2 0 0 0-2 2z" />
+    <path d="M4 20a2 2 0 0 0 2 2h13v-4M8 7h7" />
+  </Icon>
+);
+
+export const ChevronIcon = () => (
+  <Icon size={16}>
+    <path d="M6 9l6 6 6-6" />
+  </Icon>
+);
+
 export const CloseIcon = () => (
   <Icon>
     <path d="M6 6l12 12M18 6L6 18" />

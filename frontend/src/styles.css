@@ -572,3 +572,83 @@ a.figure-source:hover { text-decoration: underline; }
 }
 .manager-actions { margin-left: auto; display: inline-flex; gap: 14px; }
 .manager-actions .link { margin-left: 0; }
+
+/* ---------- What the chat studies: Class / Subject / Chapter ---------- */
+select {
+  font: inherit; color: var(--text); background-color: var(--bg); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 32px 8px 12px; min-height: 40px; width: 100%; min-width: 0;
+  appearance: none; -webkit-appearance: none; cursor: pointer; text-overflow: ellipsis;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+}
+select:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.picker-fields { display: grid; gap: 10px; }
+.picker-fields.card { grid-template-columns: 1fr; text-align: left; }
+.picker-fields.bar { grid-template-columns: minmax(110px, 0.7fr) minmax(130px, 1fr) minmax(180px, 1.6fr); flex: 1; min-width: 0; }
+.picker-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.picker-field > span { font-size: 12px; font-weight: 600; color: var(--muted); }
+.picker-fields.bar .picker-field > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.picker-fields.bar select { min-height: 36px; padding-top: 6px; padding-bottom: 6px; font-size: 14px; }
+
+.study-bar { border-bottom: 1px solid var(--border); background: var(--bg-soft); }
+.study-fields { display: flex; align-items: center; gap: 12px; padding: 8px 20px; max-width: 980px; }
+.study-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.study-label svg { width: 16px; height: 16px; }
+.study-summary { display: none; }
+
+/* ---------- New chat: two ways to start ---------- */
+.welcome { margin: auto; padding: 24px 4px; text-align: center; }
+.welcome h1 { font-size: 26px; margin: 0 0 20px; }
+.welcome-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; text-align: left; }
+.welcome-card {
+  border: 1px solid var(--border); border-radius: 16px; padding: 18px; background: var(--bg);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.welcome-card h2 { margin: 0; font-size: 17px; }
+.welcome-card p { margin: 0; }
+.welcome-icon {
+  width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+}
+.upload-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.upload-buttons button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex: 1; min-height: 42px; }
+.upload-buttons svg { width: 18px; height: 18px; }
+
+.suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
+.suggestion {
+  border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 99px;
+  padding: 8px 14px; font-size: 14px; text-align: left;
+}
+.suggestion:hover:not(:disabled) { background: var(--bg-soft); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.docs-panel .shelf-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
+.empty-files { border-style: dashed !important; text-align: center; padding: 14px !important; }
+
+@media (max-width: 800px) {
+  /* One tappable line under the title; the three pickers open below it. */
+  .study-summary {
+    display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; min-height: 44px;
+    background: none; border: none; color: var(--text); font-size: 14px; font-weight: 500; text-align: left;
+  }
+  .study-summary svg:first-child { color: var(--accent); flex-shrink: 0; }
+  .study-summary .ellipsis { flex: 1; }
+  .study-summary .spinner { margin: 0; }
+  .study-bar.open .study-summary svg:last-child { transform: rotate(180deg); }
+  .study-fields { display: none; padding: 0 14px 12px; }
+  .study-bar.open .study-fields { display: block; }
+  .study-label, .study-fields > .spinner { display: none; }
+  .picker-fields.bar { grid-template-columns: 1fr 1fr; }
+  .picker-fields.bar .picker-field.chapter { grid-column: 1 / -1; }
+  .picker-fields.bar .picker-field > span { position: static; width: auto; height: auto; clip: auto; }
+  .picker-fields.bar select, .picker-fields.card select { min-height: 46px; font-size: 16px; }
+
+  .welcome { padding: 8px 0 16px; }
+  .welcome h1 { font-size: 22px; margin-bottom: 14px; }
+  .welcome-cards { grid-template-columns: 1fr; gap: 12px; }
+  .welcome-card { padding: 16px; }
+  .upload-buttons button { min-height: 46px; }
+  .suggestions { flex-direction: column; align-items: stretch; }
+  .suggestion { padding: 12px 16px; border-radius: 12px; }
+}

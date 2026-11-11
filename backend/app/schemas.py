@@ -99,6 +99,12 @@ class AttachDocument(BaseModel):
     document_id: uuid.UUID
 
 
+class LibrarySelection(BaseModel):
+    """The library chapters a chat studies (empty: none)."""
+
+    document_ids: list[uuid.UUID]
+
+
 class QuizCreate(BaseModel):
     num_questions: int = Field(default=5, ge=1, le=15)
     topic: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None

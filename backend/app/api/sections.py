@@ -13,6 +13,7 @@ from ..ratelimit import enforce_rate_limit
 from ..schemas import (
     AttachDocument,
     DocumentOut,
+    LibrarySelection,
     MessageCreate,
     MessageOut,
     QuizCreate,
@@ -156,6 +157,18 @@ async def attach_document(
     session: AsyncSession = Depends(get_session),
 ):
     return await documents.attach(session, section_id, body.document_id, user.id)
+
+
+@router.put("/{section_id}/library", response_model=list[DocumentOut])
+async def set_library_documents(
+    section_id: uuid.UUID,
+    body: LibrarySelection,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Set which library chapters this chat studies (the class / subject / chapter picker).
+    Returns all of the chat's documents."""
+    return await documents.set_library_documents(session, section_id, body.document_ids, user.id)
 
 
 @router.delete("/{section_id}/documents/{document_id}", status_code=204)

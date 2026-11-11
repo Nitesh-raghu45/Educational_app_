@@ -246,6 +246,47 @@ async def attach(session: AsyncSession, section_id: uuid.UUID, document_id: uuid
     return (await with_figure_counts(session, [doc]))[0]
 
 
+MAX_LIBRARY_DOCUMENTS_PER_CHAT = 60
+
+
+async def set_library_documents(
+    session: AsyncSession, section_id: uuid.UUID, document_ids: list[uuid.UUID], user_id: uuid.UUID
+) -> list[Document]:
+    """Make the chat's library books exactly `document_ids` (e.g. the chapters of the class and
+    subject the student picked), in one step. The student's own files stay attached."""
+    await get_owned_section(session, section_id, user_id)
+    wanted = list(dict.fromkeys(document_ids))
+    if len(wanted) > MAX_LIBRARY_DOCUMENTS_PER_CHAT:
+        raise AppError(400, "TOO_MANY_DOCUMENTS", f"Pick at most {MAX_LIBRARY_DOCUMENTS_PER_CHAT} chapters.")
+    if wanted:
+        found = set(
+            await session.scalars(
+                select(Document.id)
+                .join(LibraryDocument, LibraryDocument.document_id == Document.id)
+                .where(Document.id.in_(wanted), Document.status == "ready")
+            )
+        )
+        if len(found) != len(wanted):
+            raise AppError(404, "DOCUMENT_NOT_FOUND", "Some of those chapters are not in the library.")
+    attached = set(
+        await session.scalars(
+            select(SectionDocument.document_id)
+            .join(LibraryDocument, LibraryDocument.document_id == SectionDocument.document_id)
+            .where(SectionDocument.section_id == section_id)
+        )
+    )
+    remove = attached - set(wanted)
+    if remove:
+        await session.execute(
+            delete(SectionDocument).where(
+                SectionDocument.section_id == section_id, SectionDocument.document_id.in_(remove)
+            )
+        )
+    session.add_all(SectionDocument(section_id=section_id, document_id=d) for d in wanted if d not in attached)
+    await session.commit()
+    return await section_documents(session, section_id, user_id)
+
+
 async def detach(session: AsyncSession, section_id: uuid.UUID, document_id: uuid.UUID, user_id: uuid.UUID) -> None:
     await get_owned_section(session, section_id, user_id)
     await session.execute(

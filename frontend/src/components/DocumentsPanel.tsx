@@ -1,19 +1,20 @@
 import { ChangeEvent, Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
 import { api, describeError } from "../api";
-import { bookTitle, matches, shelves } from "../library";
 import type { DocumentInfo } from "../types";
-import { CloseIcon } from "./icons";
+import { CameraIcon, CloseIcon, PaperclipIcon } from "./icons";
 
 interface Props {
   sectionId: string;
+  /** All of the chat's documents; library chapters are chosen with the class/subject picker and not listed here. */
   docs: DocumentInfo[];
   onDocsChange: Dispatch<SetStateAction<DocumentInfo[]>>;
   onClose: () => void;
 }
 
-const ACCEPT = ".pdf,.docx,.txt,.md,.png,.jpg,.jpeg";
+export const ACCEPT = ".pdf,.docx,.txt,.md,.png,.jpg,.jpeg";
 // File types whose figures are extracted (text files have none to miss).
 const HAS_PICTURES = /\.(pdf|docx|png|jpe?g)$/i;
+const touchScreen = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
 
 interface InFlight {
   key: string;
@@ -27,23 +28,11 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose }: Props) {
-  const [library, setLibrary] = useState<DocumentInfo[]>([]);
-  const [shared, setShared] = useState<DocumentInfo[]>([]);
-  const [query, setQuery] = useState("");
-  const [adding, setAdding] = useState(false);
+/** Upload files (or photos) to a chat, and report progress. Shared by "My files" and the new-chat screen. */
+export function useUploads(sectionId: string, onDocsChange: Dispatch<SetStateAction<DocumentInfo[]>>) {
   const [inFlight, setInFlight] = useState<InFlight[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    api.listDocuments().then(setLibrary).catch(() => {});
-  }, [docs.length]);
-
-  useEffect(() => {
-    api.listLibrary().then(setShared).catch(() => {});
-  }, []);
 
   async function uploadOne(file: File) {
     const key = `${file.name}-${file.size}-${Math.random()}`;
@@ -53,14 +42,8 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
         setInFlight((list) => list.map((u) => (u.key === key ? { ...u, progress } : u))),
       );
       // The same file again: the server reused the existing document instead of a duplicate.
-      if (doc.duplicate === "already_in_chat") {
-        setNotice(`${file.name} is already in this chat.`);
-      } else if (doc.duplicate === "existing") {
-        setNotice(
-          `${file.name} was already in your library, so it was added without processing it again` +
-            (doc.figure_status === "processing" ? ". Its figures are being extracted now." : "."),
-        );
-      }
+      if (doc.duplicate === "already_in_chat") setNotice(`${file.name} is already in this chat.`);
+      else if (doc.duplicate === "existing") setNotice(`${file.name} was uploaded before, so it was added right away.`);
       onDocsChange((current) => [...current.filter((d) => d.id !== doc.id), doc]);
     } catch (err) {
       setError(`${file.name}: ${describeError(err, "upload failed")}`);
@@ -77,23 +60,66 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
     files.forEach(uploadOne); // in parallel; the server processes them one at a time
   }
 
+  return { inFlight, error, notice, upload };
+}
+
+/** Buttons that open the file picker, and on phones the camera. */
+export function UploadButtons({ onUpload, compact }: { onUpload: (e: ChangeEvent<HTMLInputElement>) => void; compact?: boolean }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className={`upload-buttons ${compact ? "compact" : ""}`}>
+      <input ref={fileRef} type="file" accept={ACCEPT} multiple hidden onChange={onUpload} />
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={onUpload} />
+      <button className="primary" onClick={() => fileRef.current?.click()}>
+        <PaperclipIcon /> Upload a file
+      </button>
+      {touchScreen && (
+        <button className="secondary" onClick={() => cameraRef.current?.click()}>
+          <CameraIcon /> Take a photo
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function UploadProgress({ inFlight }: { inFlight: InFlight[] }) {
+  return (
+    <>
+      {inFlight.map((u) => (
+        <li key={u.key} className="busy" aria-busy="true">
+          <div className="doc-name ellipsis" title={u.name}>
+            <span className="spinner" aria-hidden="true" />
+            {u.name}
+          </div>
+          <div className="progress" role="progressbar" aria-valuenow={Math.round(u.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
+            <div className="progress-fill" style={{ width: `${Math.max(3, u.progress * 100)}%` }} />
+          </div>
+          <div className="small muted">
+            {u.progress < 1 ? `Uploading… ${Math.round(u.progress * 100)}%` : "Upload complete, saving…"}
+          </div>
+        </li>
+      ))}
+    </>
+  );
+}
+
+/** "My files": the student's own uploads in this chat (photos of notes, PDFs, worksheets). */
+export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose }: Props) {
+  const [previous, setPrevious] = useState<DocumentInfo[]>([]);
+  const { inFlight, error, notice, upload } = useUploads(sectionId, onDocsChange);
+  const own = docs.filter((d) => !d.library);
+
+  useEffect(() => {
+    api.listDocuments().then(setPrevious).catch(() => {});
+  }, [own.length]);
+
   async function attach(documentId: string) {
-    setError(null);
     try {
       const doc = await api.attachDocument(sectionId, documentId);
       onDocsChange((current) => [...current.filter((d) => d.id !== doc.id), doc]);
-    } catch (err) {
-      setError(describeError(err, "Couldn't add that document."));
-    }
-  }
-
-  /** A whole book: its chapters are added together. */
-  async function attachAll(documentIds: string[]) {
-    setAdding(true);
-    try {
-      await Promise.all(documentIds.map(attach));
-    } finally {
-      setAdding(false);
+    } catch {
+      /* the list refreshes on the next change */
     }
   }
 
@@ -103,23 +129,20 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
   }
 
   const attachedIds = new Set(docs.map((d) => d.id));
-  const available = library.filter((d) => !attachedIds.has(d.id) && d.status === "ready");
+  const available = previous.filter((d) => !attachedIds.has(d.id) && d.status === "ready");
 
   return (
     <aside className="docs-panel">
       <div className="panel-header">
-        <h3>Documents in this chat</h3>
-        <button className="icon" onClick={onClose} aria-label="Close documents">
+        <h3>My files</h3>
+        <button className="icon" onClick={onClose} aria-label="Close my files">
           <CloseIcon />
         </button>
       </div>
-      <p className="small muted">Answers and quizzes use only these files.</p>
+      <p className="small muted">Your own notes, worksheets or photos. Answers use them together with the chosen subject.</p>
 
-      <input ref={inputRef} type="file" accept={ACCEPT} multiple hidden onChange={upload} />
-      <button className="primary full" onClick={() => inputRef.current?.click()}>
-        Upload files
-      </button>
-      <div className="small muted">PDF, DOCX, TXT, MD, PNG, JPG · up to 25 MB</div>
+      <UploadButtons onUpload={upload} />
+      <div className="small muted">PDF, Word, text or photos (PNG, JPG) · up to 25 MB</div>
       {error && <div className="error">{error}</div>}
       {notice && (
         <div className="small muted" role="status">
@@ -128,22 +151,9 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
       )}
 
       <ul className="doc-list">
-        {docs.length === 0 && inFlight.length === 0 && <li className="muted small">No documents yet.</li>}
-        {inFlight.map((u) => (
-          <li key={u.key} className="busy" aria-busy="true">
-            <div className="doc-name ellipsis" title={u.name}>
-              <span className="spinner" aria-hidden="true" />
-              {u.name}
-            </div>
-            <div className="progress" role="progressbar" aria-valuenow={Math.round(u.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
-              <div className="progress-fill" style={{ width: `${Math.max(3, u.progress * 100)}%` }} />
-            </div>
-            <div className="small muted">
-              {u.progress < 1 ? `Uploading… ${Math.round(u.progress * 100)}%` : "Upload complete, saving…"}
-            </div>
-          </li>
-        ))}
-        {docs.map((d) => {
+        {own.length === 0 && inFlight.length === 0 && <li className="muted small empty-files">No files of your own yet.</li>}
+        <UploadProgress inFlight={inFlight} />
+        {own.map((d) => {
           const working = d.status === "pending" || d.status === "processing";
           return (
             <li key={d.id} className={working ? "busy" : undefined} aria-busy={working}>
@@ -157,28 +167,21 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
                 </div>
               )}
               <div className="doc-meta">
-                <span className={`status ${d.status}`}>{working ? "processing" : d.status}</span>
-                {d.library && <span className="tag">Library</span>}
+                <span className={`status ${d.status}`}>{working ? "reading" : d.status}</span>
                 <span className="small muted">
-                  {working ? "Reading & indexing… (large files can take a minute)" : formatSize(d.size_bytes)}
-                  {d.status === "ready" ? ` · ${d.chunk_count} chunks` : ""}
+                  {working ? "Reading… (large files take a minute)" : formatSize(d.size_bytes)}
                   {d.status === "ready" && d.figure_status === "done" && d.figure_count > 0
                     ? ` · ${d.figure_count} figure${d.figure_count === 1 ? "" : "s"}`
                     : ""}
                 </span>
-                {d.status === "ready" && (d.vision_pending || d.figure_status === "waiting") && (
-                  <span className="small muted" title="The AI picture reader is at its daily limit; this finishes automatically">
-                    · {d.vision_pending ? "math & figures" : "figures"} finishing later
-                  </span>
-                )}
                 {d.status === "ready" && d.figure_status === "processing" && (
                   <span className="small muted busy-label">
                     <span className="spinner" aria-hidden="true" /> finding figures…
                   </span>
                 )}
-                {d.status === "ready" && !d.library && (d.figure_status === null || d.figure_status === "failed") && HAS_PICTURES.test(d.filename) && (
+                {d.status === "ready" && (d.figure_status === null || d.figure_status === "failed") && HAS_PICTURES.test(d.filename) && (
                   <span className="small muted" title="Uploaded before figure extraction, or extraction failed">
-                    · figures not extracted: upload again to get them
+                    · figures not extracted
                   </span>
                 )}
                 {!working && (
@@ -198,67 +201,16 @@ export default function DocumentsPanel({ sectionId, docs, onDocsChange, onClose 
           <h4>From your other chats</h4>
           <ul className="doc-list">
             {available.map((d) => (
-              <li key={d.id}>
+              <li key={d.id} className="shelf-row">
                 <div className="doc-name ellipsis" title={d.filename}>
                   {d.filename}
                 </div>
                 <button className="secondary small" onClick={() => attach(d.id)}>
-                  Add to chat
+                  Add
                 </button>
               </li>
             ))}
           </ul>
-        </>
-      )}
-
-      {shared.length > 0 && (
-        <>
-          <h4>Shared library</h4>
-          <p className="small muted">Books everyone can use. Add a whole book, or only the chapters you need.</p>
-          {shared.length > 6 && (
-            <input
-              type="search"
-              placeholder="Search, e.g. class 10 or physics"
-              aria-label="Search the shared library"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          )}
-          {shelves(shared.filter((d) => matches(d, query))).map((shelf) => {
-            const missing = shelf.docs.filter((d) => !attachedIds.has(d.id));
-            return (
-              <details key={shelf.key} className="shelf" open={query.trim() ? true : undefined}>
-                <summary>
-                  <span className="ellipsis">{shelf.label}</span>
-                  <span className="badge">{shelf.docs.length}</span>
-                </summary>
-                <button
-                  className="secondary small"
-                  disabled={missing.length === 0 || adding}
-                  onClick={() => attachAll(missing.map((d) => d.id))}
-                >
-                  {missing.length === 0 ? "All chapters added" : `Add all ${missing.length} to chat`}
-                </button>
-                <ul className="doc-list">
-                  {shelf.docs.map((d) => (
-                    <li key={d.id} className="shelf-row">
-                      <span className="doc-name ellipsis" title={d.filename}>
-                        {bookTitle(d)}
-                      </span>
-                      {attachedIds.has(d.id) ? (
-                        <span className="small muted">Added</span>
-                      ) : (
-                        <button className="secondary small" disabled={adding} onClick={() => attach(d.id)}>
-                          Add
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            );
-          })}
-          {query.trim() && !shared.some((d) => matches(d, query)) && <div className="small muted">No books match.</div>}
         </>
       )}
     </aside>

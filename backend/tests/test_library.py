@@ -81,6 +81,33 @@ async def test_only_admins_change_the_library(client):
     assert (await client.get("/api/v1/library", headers=student)).json() == []
 
 
+async def test_picking_a_subject_swaps_the_chats_library_chapters(client):
+    admin = await register(client, ADMIN)
+    force = (await add_book(client, admin)).json()["id"]
+    motion = (await add_book(client, admin, "Speed is distance travelled per unit time.", "Ch 8 Motion.txt")).json()["id"]
+    algebra = (await add_book(client, admin, "A polynomial of degree two is quadratic.", "Ch 2 Polynomials.txt", "10", "Mathematics")).json()["id"]
+
+    student = await register(client, "student@example.com")
+    section_id = await new_section(client, student)
+    own = await upload_ready_doc(client, student, section_id)
+    url = f"/api/v1/sections/{section_id}/library"
+
+    # Class 9 Science, all chapters.
+    docs = (await client.put(url, json={"document_ids": [force, motion]}, headers=student)).json()
+    assert {d["id"] for d in docs} == {own, force, motion}
+    # Switched to Class 10 Mathematics: the science chapters go, the student's own file stays.
+    docs = (await client.put(url, json={"document_ids": [algebra]}, headers=student)).json()
+    assert {d["id"] for d in docs} == {own, algebra}
+    # A student's own document can't be passed off as a library chapter.
+    assert (await client.put(url, json={"document_ids": [own]}, headers=student)).status_code == 404
+    # Nothing picked: only their own file is left.
+    docs = (await client.put(url, json={"document_ids": []}, headers=student)).json()
+    assert [d["id"] for d in docs] == [own]
+    # Someone else's chat can't be changed.
+    other = await register(client, "other@example.com")
+    assert (await client.put(url, json={"document_ids": [force]}, headers=other)).status_code == 404
+
+
 async def test_own_uploads_stay_private(client):
     alice, bob = await register(client, "alice@example.com"), await register(client, "bob@example.com")
     alice_doc = await upload_ready_doc(client, alice, await new_section(client, alice))

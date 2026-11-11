@@ -1,10 +1,12 @@
-import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Dispatch, KeyboardEvent, SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import { api, describeError, streamSSE } from "../api";
+import { Catalog, NO_SCOPE, StudyScope, describeScope, loadLibrary, scopeOf } from "../library";
 import type { DocumentInfo, Message, Section, StartEvent } from "../types";
-import DocumentsPanel from "./DocumentsPanel";
+import DocumentsPanel, { UploadButtons, UploadProgress, useUploads } from "./DocumentsPanel";
 import MessageBubble from "./MessageBubble";
 import QuizPanel from "./QuizPanel";
-import { DocumentIcon, QuizIcon, SendIcon } from "./icons";
+import StudyPicker from "./StudyPicker";
+import { BookIcon, PaperclipIcon, QuizIcon, SendIcon } from "./icons";
 
 // Phones and tablets: an on-screen keyboard, where Enter should add a line, not send.
 const touchKeyboard = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
@@ -32,6 +34,9 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
   const [error, setError] = useState<string | null>(null);
   const [showDocs, setShowDocs] = useState(false);
   const [showQuiz, setShowQuiz] = useState(false);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [scopeBusy, setScopeBusy] = useState(false);
+  const syncedRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -56,11 +61,40 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
         setSection(s);
         setMessages(m);
         setDocs(d);
-        if (d.length === 0) setShowDocs(true);
       })
       .catch((err) => setError(describeError(err, "Couldn't load this chat.")));
     return () => abortRef.current?.abort(); // the server still finishes and saves the answer
   }, [sectionId]);
+
+  useEffect(() => {
+    loadLibrary()
+      .then((books) => setCatalog(new Catalog(books)))
+      .catch(() => setCatalog(new Catalog([])));
+  }, []);
+
+  const scope = catalog ? scopeOf(docs, catalog) : NO_SCOPE;
+
+  async function applyScope(next: StudyScope) {
+    if (!catalog) return;
+    setScopeBusy(true);
+    setError(null);
+    try {
+      setDocs(await api.setLibraryDocuments(sectionId, catalog.documentIds(next)));
+    } catch (err) {
+      setError(describeError(err, "Couldn't change the subject."));
+    } finally {
+      setScopeBusy(false);
+    }
+  }
+
+  // "All chapters" of a subject: chapters added to the library since then join the chat too.
+  useEffect(() => {
+    if (!catalog || syncedRef.current || scope.chapter !== "all" || !scope.subject) return;
+    syncedRef.current = true;
+    const attached = new Set(docs.filter((d) => d.library).map((d) => d.id));
+    if (catalog.documentIds(scope).some((id) => !attached.has(id))) applyScope(scope);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog, docs]);
 
   // Poll while documents are being processed.
   useEffect(() => {
@@ -197,6 +231,12 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
   const limitReached = section.status === "limit_reached";
   const hasReadyDoc = docs.some((d) => d.status === "ready");
   const processing = docs.some((d) => d.status === "pending" || d.status === "processing");
+  const ownDocs = docs.filter((d) => !d.library);
+  const studying = describeScope(scope, catalog ?? new Catalog([]));
+  const hasLibrary = (catalog?.books.length ?? 0) > 0;
+  const fresh = messages.length === 0 && docs.length === 0;
+  const topic = scope.chapter !== "all" ? studying.split(" · ").slice(2).join(" · ") : scope.subject;
+  const placeholder = topic ? `Ask about ${topic}…` : ownDocs.length ? "Ask about your files…" : "Ask a question…";
 
   return (
     <div className="chat">
@@ -209,12 +249,12 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
           <button
             className="secondary header-button"
             onClick={() => setShowDocs((v) => !v)}
-            aria-label={`Documents (${docs.length})`}
+            aria-label={`My files (${ownDocs.length})`}
             aria-expanded={showDocs}
           >
-            <DocumentIcon />
-            <span className="button-label">Documents</span>
-            <span className="badge">{docs.length}</span>
+            <PaperclipIcon />
+            <span className="button-label">My files</span>
+            {ownDocs.length > 0 && <span className="badge">{ownDocs.length}</span>}
           </button>
           <button
             className="secondary header-button"
@@ -227,16 +267,35 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
           </button>
         </div>
       </header>
+      {hasLibrary && !fresh && catalog && (
+        <StudyPicker catalog={catalog} scope={scope} onChange={applyScope} busy={scopeBusy} variant="bar" />
+      )}
 
       <div className="chat-body">
         <div className="messages" ref={messagesRef} onScroll={onMessagesScroll}>
-          {messages.length === 0 && (
-            <div className="empty-state">
-              <h1>What do you want to learn?</h1>
-              <p className="muted">
-                Answers come only from the documents in this chat. You can ask up to {section.max_questions} questions here.
-              </p>
-            </div>
+          {fresh ? (
+            <Welcome
+              sectionId={sectionId}
+              catalog={hasLibrary ? catalog : null}
+              scope={scope}
+              busy={scopeBusy}
+              onScope={applyScope}
+              onDocsChange={setDocs}
+            />
+          ) : (
+            messages.length === 0 && (
+              <div className="empty-state">
+                <h1>{topic ? `Let's study ${topic}` : "What do you want to know?"}</h1>
+                <p className="muted">Ask anything, or start with one of these:</p>
+                <div className="suggestions">
+                  {suggestionsFor(scope, ownDocs.length > 0).map((q) => (
+                    <button key={q} className="suggestion" onClick={() => send(q)} disabled={sending || !hasReadyDoc}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
           )}
           {messages.map((m, i) => (
             <MessageBubble
@@ -273,12 +332,14 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
                 <span className="spinner" aria-hidden="true" />
                 Processing your documents… you can ask questions as soon as one is ready.
               </span>
+            ) : hasLibrary ? (
+              "Choose your class and subject, or upload your own file, to start."
             ) : (
-              "Upload a document to start asking questions."
+              "Upload a file to start asking questions."
             )}
-            {!processing && (
+            {!processing && !fresh && (
               <button className="primary" onClick={() => setShowDocs(true)}>
-                Upload documents
+                Upload a file
               </button>
             )}
           </div>
@@ -289,7 +350,7 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Ask about your documents…"
+              placeholder={placeholder}
               rows={1}
               maxLength={4000}
               disabled={sending}
@@ -306,6 +367,59 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
       </footer>
 
       {showQuiz && <QuizPanel sectionId={sectionId} onClose={() => setShowQuiz(false)} />}
+    </div>
+  );
+}
+
+function suggestionsFor(scope: StudyScope, ownFiles: boolean): string[] {
+  if (scope.chapter !== "all")
+    return ["Explain this chapter in simple words", "What are the important formulas and definitions?", "Solve an example step by step"];
+  if (scope.subject) return ["What are the main topics in these chapters?", "Give me the important definitions", "Explain the first chapter simply"];
+  if (ownFiles) return ["Summarise my file", "Explain it in simple words", "What are the key points?"];
+  return [];
+}
+
+interface WelcomeProps {
+  sectionId: string;
+  catalog: Catalog | null;
+  scope: StudyScope;
+  busy: boolean;
+  onScope: (scope: StudyScope) => void;
+  onDocsChange: Dispatch<SetStateAction<DocumentInfo[]>>;
+}
+
+/** A new chat: study a subject from the library, or ask about your own file. */
+function Welcome({ sectionId, catalog, scope, busy, onScope, onDocsChange }: WelcomeProps) {
+  const { inFlight, error, upload } = useUploads(sectionId, onDocsChange);
+  return (
+    <div className="welcome">
+      <h1>What do you want to study?</h1>
+      <div className="welcome-cards">
+        {catalog && (
+          <section className="welcome-card">
+            <div className="welcome-icon">
+              <BookIcon />
+            </div>
+            <h2>Study a subject</h2>
+            <p className="muted small">Pick your class and subject. Choose one chapter, or ask across all of them.</p>
+            <StudyPicker catalog={catalog} scope={scope} onChange={onScope} busy={busy} variant="card" />
+          </section>
+        )}
+        <section className="welcome-card">
+          <div className="welcome-icon">
+            <PaperclipIcon />
+          </div>
+          <h2>Ask about your own notes</h2>
+          <p className="muted small">Upload a PDF, Word file or a photo of your notes or homework.</p>
+          <UploadButtons onUpload={upload} />
+          {error && <div className="error small">{error}</div>}
+          {inFlight.length > 0 && (
+            <ul className="doc-list">
+              <UploadProgress inFlight={inFlight} />
+            </ul>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

@@ -142,7 +142,7 @@ export default function App() {
           <div className="empty-state">
             <h1>Study Assistant</h1>
             <p className="muted">
-              Upload your notes, or add books from the shared library, and ask questions answered only from them.
+              Pick your class and subject, or upload your own notes, and ask questions answered from them.
             </p>
             <button className="primary" onClick={newChat}>
               Start a new chat
