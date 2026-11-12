@@ -97,8 +97,8 @@ transaction as the action, so concurrent requests can't overshoot and a rejected
 
 ### Answer formatting
 Answers render ChatGPT/Claude-style ([AnswerMarkdown.tsx](frontend/src/components/AnswerMarkdown.tsx)):
-- **Citations:** compact numbered chips (one per paragraph, list item or table row) with the source
-  passage on hover or tap, plus a Sources row below the answer.
+- **Citations:** the model still cites sources as [n] (kept in the saved answer and used to find
+  figures), but the numbers, the Sources list and figure file/page captions are hidden from students.
 - **Tables:** bordered and scrollable.
 - **Math:** KaTeX (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`).
 - **Code:** code blocks with a Copy button.

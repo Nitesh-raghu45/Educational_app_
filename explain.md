@@ -550,7 +550,7 @@ TypeScript shapes matching the API: `User`, `Section`, `Message`, `Citation`, `W
 | `Sidebar.tsx` | Chat list, "New chat", "Manage library" (admins), and `UsageMeter` (today's limits). |
 | `LibraryManager.tsx` | Admin page: upload chapters to the shared library with a class and subject, watch processing, delete books. |
 | `ChatView.tsx` | One chat: messages, question box, sending a question and streaming the answer, retry, polling documents while they process. |
-| `MessageBubble.tsx` | One message with its sources list and a copy button. |
+| `MessageBubble.tsx` | One message with its copy and visualize buttons. |
 | `AnswerMarkdown.tsx` | Renders an answer: markdown, tables, math (KaTeX), citation chips with previews, and visual blocks (Mermaid diagrams, charts, figures, web pictures). Memoized so typing doesn't redraw answers. |
 | `DocumentsPanel.tsx` | Upload with progress bars, document status, figure progress, duplicate notices, attach documents from other chats, and the **Shared library** (grouped by class and subject; add a whole book or single chapters). |
 | `FigureBlock.tsx` | Loads a document figure (with the token) and shows it with title and page. |

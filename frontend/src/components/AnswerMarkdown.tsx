@@ -12,49 +12,6 @@ import WebImageBlock from "./WebImageBlock";
 // The diagram renderer pulls in Mermaid, so it is only downloaded when a diagram appears.
 const MermaidBlock = lazy(() => import("./MermaidBlock"));
 
-const POPOVER_WIDTH = 320;
-
-function CitationChip({ n, citation }: { n: string; citation?: Citation }) {
-  // Positioned against the window (position: fixed), so it isn't clipped by scrolling tables.
-  const [pos, setPos] = useState<{ left: number; top: number; above: boolean } | null>(null);
-  const show = (el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    const width = Math.min(POPOVER_WIDTH, window.innerWidth - 16);
-    const left = Math.min(Math.max(r.left + r.width / 2 - width / 2, 8), window.innerWidth - width - 8);
-    const above = r.top > 170;
-    setPos({ left, top: above ? r.top - 8 : r.bottom + 8, above });
-  };
-  return (
-    <span className="cite">
-      <button
-        type="button"
-        className="cite-chip"
-        aria-label={`Source ${n}${citation ? `: ${citation.filename}` : ""}`}
-        onMouseEnter={(e) => show(e.currentTarget)}
-        onFocus={(e) => show(e.currentTarget)}
-        onMouseLeave={() => setPos(null)}
-        onBlur={() => setPos(null)}
-        onClick={(e) => (pos ? setPos(null) : show(e.currentTarget))}
-      >
-        {n}
-      </button>
-      {citation && pos && (
-        <span
-          className="cite-pop"
-          role="tooltip"
-          style={{ left: pos.left, top: pos.top, transform: pos.above ? "translateY(-100%)" : undefined }}
-        >
-          <span className="cite-pop-title">
-            {citation.filename}
-            {citation.page ? ` · page ${citation.page}` : ""}
-          </span>
-          <span className="cite-pop-snippet">{citation.snippet}</span>
-        </span>
-      )}
-    </span>
-  );
-}
-
 function CodeBlock({ children }: { children: ReactNode }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -131,10 +88,8 @@ function renderers(citations: Citation[] | null, streaming: boolean): Components
   const webImages = new Map((citations ?? []).flatMap((c) => (c.web_image ? [[String(c.web_image.n), c.web_image]] : [])));
   return {
     a({ href, children }) {
-      if (href?.startsWith(CITE_LINK)) {
-        const n = href.slice(CITE_LINK.length);
-        return <CitationChip n={n} citation={byIndex.get(n)} />;
-      }
+      // Source numbers ([1], [2]…) stay in the saved answer but aren't shown to students.
+      if (href?.startsWith(CITE_LINK)) return null;
       return (
         <a href={href} target="_blank" rel="noopener noreferrer">
           {children}

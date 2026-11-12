@@ -1,5 +1,5 @@
 import type { Section, Usage, User } from "../types";
-import { PlusIcon } from "./icons";
+import { BookIcon, PlusIcon } from "./icons";
 
 const USAGE_ROWS: { kind: keyof Usage["limits"]; label: string }[] = [
   { kind: "question", label: "Questions" },
@@ -51,6 +51,12 @@ export default function Sidebar({
 }: Props) {
   return (
     <aside className="sidebar">
+      <div className="brand">
+        <span className="brand-logo">
+          <BookIcon />
+        </span>
+        Study Assistant
+      </div>
       <button className="new-chat" onClick={onNewChat}>
         <PlusIcon /> New chat
       </button>
@@ -88,6 +94,7 @@ export default function Sidebar({
       </nav>
       {usage && <UsageMeter usage={usage} />}
       <div className="sidebar-footer">
+        <span className="avatar" aria-hidden="true">{user.email.charAt(0)}</span>
         <span className="small muted ellipsis">{user.email}</span>
         <button className="link small" onClick={onLogout}>
           Sign out

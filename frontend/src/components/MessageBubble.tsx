@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Message } from "../types";
 import { hasVisual, stripCitations } from "../visuals/markdownPrep";
 import AnswerMarkdown from "./AnswerMarkdown";
+import { BookIcon } from "./icons";
 
 interface Props {
   message: Message;
@@ -29,8 +30,6 @@ function CopyButton({ text }: { text: string }) {
 }
 
 export default function MessageBubble({ message, onRetry, onVisualize }: Props) {
-  const [openSource, setOpenSource] = useState<string | null>(null);
-
   if (message.role === "user") {
     return (
       <div className="message user">
@@ -41,12 +40,12 @@ export default function MessageBubble({ message, onRetry, onVisualize }: Props) 
 
   const streaming = message.status === "pending" || message.status === "streaming";
   const waiting = streaming && !message.content;
-  // Web pictures travel with the citations but are illustrations, not sources.
-  const citations = (message.citations ?? []).filter((c) => !c.web_image);
-  const open = citations.find((c) => c.chunk_id === openSource);
 
   return (
     <div className="message assistant">
+      <div className="bot-avatar" aria-hidden="true">
+        <BookIcon />
+      </div>
       <div className="answer">
         {waiting ? (
           <div className="typing" aria-label="Thinking">
@@ -58,28 +57,6 @@ export default function MessageBubble({ message, onRetry, onVisualize }: Props) 
           <div className="markdown">
             <AnswerMarkdown content={message.content} citations={message.citations} streaming={streaming} />
             {message.status === "streaming" && <span className="cursor" />}
-          </div>
-        )}
-
-        {citations.length > 0 && !streaming && (
-          <div className="sources">
-            <div className="sources-label">Sources</div>
-            <div className="source-cards">
-              {citations.map((c) => (
-                <button
-                  key={c.chunk_id}
-                  type="button"
-                  className={`source-card ${openSource === c.chunk_id ? "open" : ""}`}
-                  onClick={() => setOpenSource(openSource === c.chunk_id ? null : c.chunk_id)}
-                  aria-expanded={openSource === c.chunk_id}
-                >
-                  <span className="source-num">{c.index}</span>
-                  <span className="source-name">{c.filename}</span>
-                  {c.page ? <span className="source-page">p.{c.page}</span> : null}
-                </button>
-              ))}
-            </div>
-            {open && <blockquote className="source-snippet">{open.snippet}</blockquote>}
           </div>
         )}
 

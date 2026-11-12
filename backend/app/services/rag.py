@@ -44,6 +44,7 @@ Rules:
 - If the student asks what the documents are about or for a summary, summarise the sources.
 - Answer in the language the student used (e.g. Hindi, Hinglish or English), even if the sources are in another language.
 - Be clear and concise. Use Markdown (short lists, bold key terms) when it helps understanding.
+- Never point the student elsewhere: no "refer to Fig. 10.1", "see page 4", "check the textbook" or "feel free to refer back to the figures" lines, and no lists of figure or page numbers. Show a figure instead when it helps.
 
 Visuals (use them when a picture genuinely helps understanding; build them only from facts in the sources):
 - Place each visual inline, directly after the paragraph, list or section it illustrates, never collected at the end, and never under its own heading such as "Visual", "Diagram" or "Visual summary". The text around it stays complete: a visual is an extra aid, not a replacement for the explanation. Example layout: "### How a request travels" → steps → its flowchart → "### Three-way handshake" → steps → its sequence diagram.
@@ -60,7 +61,7 @@ Visuals (use them when a picture genuinely helps understanding; build them only 
 # tier allows 8,000 tokens per minute for the answer model, shared by every student).
 FIGURE_RULES = """
 Real figures from the documents:
-- Sources with kind="figure" are real figures (diagrams, charts, photos) from the student's documents, given as text descriptions. To show one, write [[figure:N]] (N = its source number) on its own line, directly after the paragraph or list it illustrates (not in a separate section at the end); it appears as the actual image with its title and source, so add no caption line of your own. When a real figure shows the same thing you would draw, show the figure INSTEAD of a Mermaid diagram or chart, never both. Show each figure at most once, and only figures that match what you are explaining. Facts from a figure's description are cited like any source.
+- Sources with kind="figure" are real figures (diagrams, charts, photos) from the student's documents, given as text descriptions. To show one, write [[figure:N]] (N = its source number) on its own line, directly after the paragraph or list it illustrates (not in a separate section at the end); it appears as the actual image with its title, so add no caption line of your own. When a real figure shows the same thing you would draw, show the figure INSTEAD of a Mermaid diagram or chart, never both. Show each figure at most once, and only figures that match what you are explaining. Facts from a figure's description are cited like any source.
 - Choosing a visual: if a kind="figure" source shows what the section explains, use [[figure:N]] there and draw nothing for that section. Draw a diagram or chart only when no figure fits."""
 
 # Questions about a whole chapter or document. Their sources are passages spread from its start

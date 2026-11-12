@@ -41,7 +41,6 @@ export default function FigureBlock({ citation }: { citation: Citation }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
 
-  const source = `${citation.filename}${citation.page ? ` · page ${citation.page}` : ""}`;
   return (
     <figure className={`visual doc-figure ${expanded ? "expanded" : ""}`}>
       {src && (
@@ -64,9 +63,6 @@ export default function FigureBlock({ citation }: { citation: Citation }) {
       </div>
       <figcaption>
         <span className="figure-title">{figure.title}</span>
-        <span className="figure-source">
-          <span className="source-num">{citation.index}</span> {source}
-        </span>
       </figcaption>
     </figure>
   );
