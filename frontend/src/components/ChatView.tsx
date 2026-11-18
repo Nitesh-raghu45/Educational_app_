@@ -2,11 +2,12 @@ import { Dispatch, KeyboardEvent, SetStateAction, useCallback, useEffect, useRef
 import { api, describeError, streamSSE } from "../api";
 import { Catalog, NO_SCOPE, StudyScope, describeScope, loadLibrary, scopeOf } from "../library";
 import type { DocumentInfo, Message, Section, StartEvent } from "../types";
+import Composer from "./Composer";
 import DocumentsPanel, { UploadButtons, UploadProgress, useUploads } from "./DocumentsPanel";
 import MessageBubble from "./MessageBubble";
 import QuizPanel from "./QuizPanel";
 import StudyPicker from "./StudyPicker";
-import { BookIcon, PaperclipIcon, QuizIcon, SendIcon } from "./icons";
+import { BookIcon, PaperclipIcon } from "./icons";
 
 // Phones and tablets: an on-screen keyboard, where Enter should add a line, not send.
 const touchKeyboard = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
@@ -43,6 +44,7 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
   // Follow a streaming answer only while the reader is at the bottom, so scrolling up to
   // reread something isn't interrupted by every new token.
   const followRef = useRef(true);
+  const uploads = useUploads(sectionId, setDocs);
 
   const updateSection = useCallback(
     (s: Section) => {
@@ -242,30 +244,6 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
     <div className="chat">
       <header className="chat-header">
         <h2 className="ellipsis">{section.title ?? "New chat"}</h2>
-        <div className="header-actions">
-          <span className={`quota ${limitReached ? "full" : section.remaining <= 5 ? "low" : ""}`}>
-            {section.question_count} / {section.max_questions} questions
-          </span>
-          <button
-            className="secondary header-button"
-            onClick={() => setShowDocs((v) => !v)}
-            aria-label={`My files (${ownDocs.length})`}
-            aria-expanded={showDocs}
-          >
-            <PaperclipIcon />
-            <span className="button-label">My files</span>
-            {ownDocs.length > 0 && <span className="badge">{ownDocs.length}</span>}
-          </button>
-          <button
-            className="secondary header-button"
-            onClick={() => setShowQuiz(true)}
-            disabled={!hasReadyDoc}
-            aria-label="Quiz me"
-          >
-            <QuizIcon />
-            <span className="button-label">Quiz me</span>
-          </button>
-        </div>
       </header>
       {hasLibrary && !fresh && catalog && (
         <StudyPicker catalog={catalog} scope={scope} onChange={applyScope} busy={scopeBusy} variant="bar" />
@@ -344,26 +322,37 @@ export default function ChatView({ sectionId, onSectionChange, onNewChat }: Prop
             )}
           </div>
         ) : (
-          <div className="composer">
-            <textarea
-              ref={inputRef}
+          <>
+            {(uploads.inFlight.length > 0 || uploads.error || uploads.notice) && (
+              <div className="composer-uploads">
+                {uploads.inFlight.length > 0 && (
+                  <ul className="doc-list">
+                    <UploadProgress inFlight={uploads.inFlight} />
+                  </ul>
+                )}
+                {uploads.error && <div className="error small">{uploads.error}</div>}
+                {uploads.notice && <div className="muted small">{uploads.notice}</div>}
+              </div>
+            )}
+            <Composer
+              inputRef={inputRef}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={setDraft}
+              onSend={() => send()}
               onKeyDown={onKeyDown}
               placeholder={placeholder}
-              rows={1}
-              maxLength={4000}
-              disabled={sending}
+              sending={sending}
               enterKeyHint={touchKeyboard ? "enter" : "send"}
+              onUpload={uploads.upload}
+              filesCount={ownDocs.length}
+              onOpenFiles={() => setShowDocs(true)}
+              onQuiz={() => setShowQuiz(true)}
+              quizDisabled={!hasReadyDoc}
+              remaining={section.remaining}
+              maxQuestions={section.max_questions}
             />
-            <button className="send" onClick={() => send()} disabled={sending || !draft.trim()} aria-label="Send">
-              <SendIcon />
-            </button>
-          </div>
+          </>
         )}
-        <div className="small muted hint">
-          {limitReached ? "" : `${section.remaining} question${section.remaining === 1 ? "" : "s"} left in this chat`}
-        </div>
       </footer>
 
       {showQuiz && <QuizPanel sectionId={sectionId} onClose={() => setShowQuiz(false)} />}
@@ -394,6 +383,7 @@ function Welcome({ sectionId, catalog, scope, busy, onScope, onDocsChange }: Wel
   return (
     <div className="welcome">
       <h1>What do you want to study?</h1>
+      <p className="welcome-sub">Pick a chapter from the library, or upload your own notes.</p>
       <div className="welcome-cards">
         {catalog && (
           <section className="welcome-card">

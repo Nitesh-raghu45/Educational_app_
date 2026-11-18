@@ -41,6 +41,9 @@ def _context_text(message: ChatMessage) -> str:
     return re.sub(r"\n{3,}", "\n\n", _MARKER_RE.sub("", text)).strip()
 
 
+context_text = _context_text
+
+
 async def recent_history(
     session: AsyncSession, section_id: uuid.UUID, before: datetime, limit: int
 ) -> list[ChatMessage]:
@@ -57,12 +60,13 @@ async def recent_history(
     return list(reversed(list(rows)))
 
 
-def history_as_chat(history: list[ChatMessage]) -> list[dict[str, str]]:
+def history_as_chat(history: list[ChatMessage], latest_chars: int = MAX_HISTORY_CHARS) -> list[dict[str, str]]:
     # The latest exchange in full (follow-ups mostly refer to it); older messages shortened, since
-    # every token counts against the answer model's per-minute budget.
+    # every token counts against the answer model's per-minute budget. Long answers (a question
+    # set, a chapter summary) get `latest_chars`, so "give me more" can see what was already given.
     last = len(history) - 2
     return [
-        {"role": m.role, "content": _clip(_context_text(m), MAX_HISTORY_CHARS if i >= last else OLDER_HISTORY_CHARS)}
+        {"role": m.role, "content": _clip(_context_text(m), latest_chars if i >= last else OLDER_HISTORY_CHARS)}
         for i, m in enumerate(history)
     ]
 

@@ -259,6 +259,78 @@ async def spread_chunks(
     return [Evidence(c.id, c.document_id, name, c.page, c.text, 0.0, "overview") for c, name in ordered]
 
 
+# Headings of a chapter's question sections: "EXERCISES", "Exercise 10.2", "QUESTIONS", "Intext Questions".
+_QUESTION_HEADING_RE = re.compile(
+    r"^\s*(?:EXERCISES?\b|Exercises?\s*\d+(?:\.\d+)*|QUESTIONS\b|Questions\s*$|In-?\s?text\s+Questions"
+    r"|Additional\s+(?:Questions|Exercises)|Practice\s+Questions)",
+    re.MULTILINE | re.IGNORECASE,
+)
+# Numbered questions that don't end in "?": "3. Draw a labelled diagram…", "Q2) Prove that…".
+_NUMBERED_TASK_RE = re.compile(
+    r"^\s*(?:Q\.?\s*)?\d{1,2}\s*[.)]\s*(?:What|Why|How|Which|Who|When|Where|Name|Define|Draw|Explain|Describe"
+    r"|Prove|Find|Show|State|Give|List|Write|Differentiate|Distinguish|Compare|Calculate|Solve|Mention|Construct"
+    r"|Fill|Choose|Tick|Match|Is|Are|Can|Does|Do|If|In|A|An|The|Two|Three)\b",
+    re.MULTILINE,
+)
+_QUESTION_END_RE = re.compile(r"[?？]")
+_NUMBERED_ITEM_RE = re.compile(r"^\s*\d{1,2}\s*[.)]\s+\S", re.MULTILINE)
+
+
+def question_score(text: str) -> int:
+    """How much of a passage is questions: 0 for plain explanation, higher for question boxes
+    and exercises (a heading counts most, then each question)."""
+    score = 5 * len(_QUESTION_HEADING_RE.findall(text))
+    score += min(len(_QUESTION_END_RE.findall(text)), 12)
+    score += min(len(_NUMBERED_TASK_RE.findall(text)), 12)
+    return score
+
+
+async def question_chunks(
+    session: AsyncSession, *, user_id: uuid.UUID, document_ids: list[uuid.UUID]
+) -> list[Evidence]:
+    """Passages that hold the chapter's questions (in-text boxes, exercises), in reading order.
+
+    For "important questions" / "exercise questions": search finds one or two of them, and an
+    even spread through the chapter misses most, so every passage is checked. `score` holds
+    how question-like the passage is, so the least useful can be dropped first.
+    """
+    if not document_ids:
+        return []
+    rows = (
+        await session.execute(
+            select(DocumentChunk, Document.filename)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(
+                library.readable_by(user_id),
+                Document.id.in_(document_ids),
+                DocumentChunk.chunk_index < FIGURE_CHUNK_BASE,
+            )
+        )
+    ).all()
+    order = {document_id: n for n, document_id in enumerate(document_ids)}
+    rows = sorted(rows, key=lambda r: (order.get(r[0].document_id, 0), r[0].chunk_index))
+    found: list[Evidence] = []
+    previous: tuple[uuid.UUID, int, int] | None = None  # document, chunk index, score
+    for chunk, name in rows:
+        score = question_score(chunk.text)
+        # An exercise running on into this passage: numbered items right after a question
+        # passage, even when they don't start with a question word ("5. A chord of a circle…").
+        continues = (
+            previous is not None
+            and previous[0] == chunk.document_id
+            and previous[1] == chunk.chunk_index - 1
+            and previous[2] >= 4
+            and len(_NUMBERED_ITEM_RE.findall(chunk.text)) >= 2
+        )
+        if continues:
+            score = max(score, 2)
+        # A lone "?" in the explanation is usually rhetorical ("Why does this happen?").
+        if score >= 2:
+            found.append(Evidence(chunk.id, chunk.document_id, name, chunk.page, chunk.text, float(score), "questions"))
+        previous = (chunk.document_id, chunk.chunk_index, score)
+    return found
+
+
 async def sample_chunks(
     session: AsyncSession, *, user_id: uuid.UUID, document_ids: list[uuid.UUID], count: int
 ) -> list[Evidence]:

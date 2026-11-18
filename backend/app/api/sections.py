@@ -24,6 +24,7 @@ from ..schemas import (
 )
 from ..security import current_user, current_user_id
 from ..services import documents, quiz, rag, retrieval, sections
+from ..services import router as message_router
 from .quizzes import quiz_out
 from .streaming import replay_response, start_generation, stream_response
 
@@ -98,7 +99,8 @@ async def post_message(
     """Submit a question and stream the answer as SSE: message_start, token*, citations, done | error."""
     # Embedding the question starts now, while the question is saved (both take a while on
     # small servers with a distant database), unless it is a follow-up that gets rewritten first.
-    retrieval.prefetch_embedding(body.content)
+    if message_router.route(body.content).route != "chat":  # small talk is answered without a search
+        retrieval.prefetch_embedding(body.content)
     await enforce_rate_limit(user_id, "messages", get_settings().rate_limit_per_minute)
     sub = await sections.submit_question(
         session, section_id=section_id, user_id=user_id, content=body.content, idempotency_key=body.client_message_id

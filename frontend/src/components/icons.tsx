@@ -78,6 +78,45 @@ export const ChevronIcon = () => (
   </Icon>
 );
 
+export const CopyIcon = () => (
+  <Icon size={16}>
+    <rect x="8" y="8" width="14" height="14" rx="2" />
+    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+  </Icon>
+);
+
+export const CheckIcon = () => (
+  <Icon size={16}>
+    <path d="M20 6 9 17l-5-5" />
+  </Icon>
+);
+
+export const SparklesIcon = () => (
+  <Icon size={16}>
+    <path d="M9.9 15.5a2 2 0 0 0-1.4-1.4l-6.1-1.6a.5.5 0 0 1 0-1l6.1-1.6a2 2 0 0 0 1.4-1.4L11.5 2.4a.5.5 0 0 1 1 0l1.6 6.1a2 2 0 0 0 1.4 1.4l6.1 1.6a.5.5 0 0 1 0 1l-6.1 1.6a2 2 0 0 0-1.4 1.4l-1.6 6.1a.5.5 0 0 1-1 0z" />
+    <path d="M20 3v4M22 5h-4" />
+  </Icon>
+);
+
+export const MicIcon = () => (
+  <Icon size={18}>
+    <rect x="9" y="2" width="6" height="12" rx="3" />
+    <path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4" />
+  </Icon>
+);
+
+export const StopIcon = () => (
+  <Icon size={14}>
+    <rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" />
+  </Icon>
+);
+
+export const LanguagesIcon = () => (
+  <Icon size={16}>
+    <path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6" />
+  </Icon>
+);
+
 export const CloseIcon = () => (
   <Icon>
     <path d="M6 6l12 12M18 6L6 18" />

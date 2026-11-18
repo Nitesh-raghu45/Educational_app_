@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Message } from "../types";
 import { hasVisual, stripCitations } from "../visuals/markdownPrep";
 import AnswerMarkdown from "./AnswerMarkdown";
-import { BookIcon } from "./icons";
+import { CheckIcon, CopyIcon, SparklesIcon } from "./icons";
 
 interface Props {
   message: Message;
@@ -11,20 +11,23 @@ interface Props {
   onVisualize?: () => void;
 }
 
+/** Ghost icon button in the message footer, as in the shadcn chatbot template. */
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
       className="msg-action"
+      aria-label={copied ? "Copied" : "Copy"}
+      title={copied ? "Copied" : "Copy"}
       onClick={() =>
         navigator.clipboard?.writeText(text).then(() => {
           setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          setTimeout(() => setCopied(false), 2000);
         })
       }
     >
-      {copied ? "✓ Copied" : "Copy"}
+      {copied ? <CheckIcon /> : <CopyIcon />}
     </button>
   );
 }
@@ -43,15 +46,11 @@ export default function MessageBubble({ message, onRetry, onVisualize }: Props) 
 
   return (
     <div className="message assistant">
-      <div className="bot-avatar" aria-hidden="true">
-        <BookIcon />
-      </div>
       <div className="answer">
         {waiting ? (
-          <div className="typing" aria-label="Thinking">
-            <span />
-            <span />
-            <span />
+          <div className="thinking" role="status">
+            <span className="spinner" aria-hidden="true" />
+            <span className="thinking-label">Thinking</span>
           </div>
         ) : (
           <div className="markdown">
@@ -64,9 +63,13 @@ export default function MessageBubble({ message, onRetry, onVisualize }: Props) 
           <div className="msg-actions">
             <CopyButton text={stripCitations(message.content)} />
             {onVisualize && !hasVisual(message.content) && (
-              <button type="button" className="msg-action" onClick={onVisualize}
-                title="Draw a diagram or chart of this answer (uses 1 question)">
-                ◇ Visualize
+              <button
+                type="button"
+                className="msg-action"
+                onClick={onVisualize}
+                title="Draw a diagram or chart of this answer (uses 1 question)"
+              >
+                <SparklesIcon /> Visualize
               </button>
             )}
           </div>

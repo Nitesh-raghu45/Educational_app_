@@ -20,10 +20,10 @@ from .. import timing
 from ..config import get_settings
 from ..db import SessionLocal
 from ..models import ChatMessage, ChatSection, Document, utcnow
-from . import conversation, providers, web_images
+from . import conversation, providers, router, web_images
 from .figures import figure_counts
 from .llm import ModelBusy
-from .retrieval import Evidence, evenly_spaced, format_sources, retrieve, spread_chunks
+from .retrieval import Evidence, evenly_spaced, format_sources, question_chunks, retrieve, spread_chunks
 from .sections import ready_document_ids
 from .web_images import WebImage, format_web_images
 
@@ -73,6 +73,35 @@ This question is about a whole chapter or document. These rules replace "be conc
 - If the student asks for a summary, overview or key points: give a structured summary that still covers every main idea, one or two lines each.
 - Be as long as the material needs; don't cut sections short."""
 
+# The chapter's own questions: "important questions", "exercise questions", "back exercise".
+# Their sources are every passage that holds questions (in-text boxes, the exercises at the end).
+QUESTION_RULES = """
+The student wants the questions from this chapter (important, exercise, in-text or practice questions). These rules replace "be concise" and the whole-chapter rules for it:
+- List EVERY question that appears in the sources, never just one or a few: the in-text questions and all exercise questions, each with its sub-parts (a), (b), (i), (ii)…, worded as the sources word them (only fix broken spacing from scanning).
+- Keep the chapter's order and its numbering. Group them under ### headings such as "In-text questions" (with the section number when the sources give it) and "Exercises". Put formulas in $...$.
+- Don't answer the questions unless the student asks for answers or solutions. Don't write "and N more questions": write them all out.
+- If the student asked for the important ones: after the full list, add "### Most important to practise" naming up to 6 of the listed questions (by number, with a few words on why: a key definition, theorem, process or diagram). Pick only from the listed questions; never make up new ones.
+- If the sources contain no questions, say that the chapter text you have has no question section, and offer to make practice questions from it instead.
+- List from the sources, even if an earlier answer in this conversation listed fewer."""
+
+# New questions that could come in an exam: "generate questions that can come in the exam",
+# "make a test", "sample paper". Their sources are passages from all through the chapter plus
+# its own exercises, so the set covers every topic and can include the textbook's questions.
+EXAM_RULES = """
+The student wants questions that could come in their exam or a test on this chapter. These rules replace "be concise" and the whole-chapter rules for it:
+- Write a practice set that covers ALL the main topics in the sources, in the chapter's order, in the usual school exam pattern, each part under its own ### heading:
+  - "Multiple choice (1 mark)": about 5 questions, options (a)–(d) on separate lines.
+  - "Very short answer (1 mark)": about 5.
+  - "Short answer (2–3 marks)": about 5.
+  - "Long answer (5 marks)": about 3.
+  - "Diagram / numerical questions": only if the chapter has diagrams, formulas or solved examples (numericals like its solved examples, with different values).
+- Every question must be answerable from the sources alone; ask nothing the sources don't cover. Number the questions continuously.
+- Include the most likely textbook questions (from the chapter's exercises or in-text questions in the sources) where they fit, marked "(NCERT)"; the rest are new questions in the same style.
+- If the student asks for a number, type or difficulty of questions (e.g. "10 MCQs", "only long answers"), follow that instead of the pattern above.
+- Don't give answers unless the student asks; end with one line saying they can ask for the answers. Never reveal the answer inside a question.
+- Read the conversation: if you already gave questions and the student wants more, write NEW ones that don't repeat or reword earlier ones (other topics, angles, question types); don't show the same textbook questions again.
+- Don't add notes about where the questions come from; just give the set."""
+
 WEB_RULES = """
 Pictures from the web (the WEB IMAGES list after the sources):
 - Each <image id="N"> is a picture found online for this topic, known to you only by its title, site and short description. To show one, write [[web:N]] on its own line directly after the paragraph or list it illustrates; it appears as the picture with its site and a link, so add no caption of your own.
@@ -109,6 +138,50 @@ _WHOLE_RE = re.compile(
 )
 
 
+# Asking for the chapter's questions: "important questions", "exercise questions", "in-text
+# questions", "questions in this chapter", "back exercise", "PYQs", "imp sawal".
+_QUESTIONS_RE = re.compile(
+    r"\b(?:important|imp|expected|likely|practice|practise|exercise|exam|board|in-?text|back|end|extra"
+    r"|additional|ncert|textbook|chapter|pyq|sample|all\s+the|all)\s+(?:questions?|qs|sawal)\b"
+    r"|\bprevious\s+years?'?s?\s+(?:questions?|papers?)\b"
+    r"|\bquestions?\s+(?:(?:given|asked)\s+)?(?:in|of|from|at\s+the\s+end\s+of)\s+(?:this|the|that|my)\s+"
+    rf"{_DOCUMENT_WORDS}"
+    r"|\b(?:the|this|ncert|chapter|end|back)\s+exercises?\b|\bexercises?\s+(?:\d+(?:\.\d+)?|questions?)\b"
+    r"|\bpyqs?\b|\bquestion\s+bank\b|\bmahatvapurn\w*\s+(?:prashn\w*|sawal)",
+    re.IGNORECASE,
+)
+
+
+def is_questions_request(question: str) -> bool:
+    """Asks for the chapter's own questions (important, exercise, in-text…), not about a topic."""
+    return bool(_QUESTIONS_RE.search(question))
+
+
+_QUESTION_WORDS = r"(?:questions?|qs|ques|mcqs?|sawal|prashn\w*)"
+# Asking for NEW questions to practise for an exam: "generate the questions that can appear in the
+# exam", "make a test", "likely exam questions", "sample paper", "quiz me with questions".
+_EXAM_RE = re.compile(
+    r"\b(?:generate|make|create|prepare|frame|predict|guess|suggest|bana\w*)\b.{0,40}?"
+    rf"\b(?:{_QUESTION_WORDS}|tests?|papers?)\b"
+    rf"|\b{_QUESTION_WORDS}\b.{{0,40}}?\b(?:can|could|may|might|will|would|should|likely\s+to)\s+"
+    r"(?:come|appear|be\s+asked|be\s+given)\b"
+    rf"|\b(?:likely|expected|possible|probable|predicted|exam|test|board|practice|practise)\s+(?:exam\s+)?{_QUESTION_WORDS}\b"
+    r"|\b(?:sample|model|practice|mock|test|question)\s+(?:papers?|tests?)\b"
+    rf"|\b{_QUESTION_WORDS}\s+(?:for|in)\s+(?:the\s+|my\s+|an?\s+)?(?:exams?|tests?|boards?)\b"
+    r"|\bexam\s+(?:me|mein|main)\s+(?:kya|kaun)\b",
+    re.IGNORECASE,
+)
+
+
+# "Generate answers for these questions" / "solutions to the exam questions" want answers instead.
+_ANSWERS_FOR_RE = re.compile(r"\b(?:answers?|solutions?|solve|hal)\s+(?:to|of|for|the|these|those|all)\b", re.IGNORECASE)
+
+
+def is_exam_request(question: str) -> bool:
+    """Asks for new questions to practise for an exam or test, not the chapter's own list."""
+    return bool(_EXAM_RE.search(question)) and not _ANSWERS_FOR_RE.search(question)
+
+
 def is_overview_question(question: str) -> bool:
     """About a document or chapter as a whole (a summary, or learning all of it)."""
     return bool(_OVERVIEW_RE.search(question) or _WHOLE_RE.search(question))
@@ -142,6 +215,13 @@ FIGURE_REF_RE = re.compile(r"\[\[\s*figure\s*:\s*(\d{1,2})\s*\]\]", re.IGNORECAS
 WEB_REF_RE = re.compile(r"\[\[\s*web\s*:\s*(\d{1,2})\s*\]\]", re.IGNORECASE)
 
 
+def latest_history_chars(whole_chapter: bool) -> int:
+    """How much of the latest exchange the model sees. Chapter-wide answers (question sets,
+    summaries) are long, and a follow-up like "give me more" must see all of the last one; their
+    prompt budget already counts it, leaving less room for sources only when it is long."""
+    return 6000 if whole_chapter else conversation.MAX_HISTORY_CHARS
+
+
 def build_messages(
     summary: str | None,
     history: list[ChatMessage],
@@ -150,9 +230,15 @@ def build_messages(
     query: str,
     images: list[WebImage] | None = None,
     whole_chapter: bool = False,
+    chapter_questions: bool = False,
+    exam: bool = False,
 ) -> list[dict[str, str]]:
     system = SYSTEM_PROMPT
-    if whole_chapter:
+    if exam:
+        system += "\n" + EXAM_RULES
+    elif chapter_questions:
+        system += "\n" + QUESTION_RULES
+    elif whole_chapter:
         system += "\n" + CHAPTER_RULES
     if any(e.figure for e in evidence):
         system += "\n" + FIGURE_RULES
@@ -161,7 +247,7 @@ def build_messages(
     messages = [{"role": "system", "content": system}]
     if summary:
         messages.append({"role": "system", "content": f"Summary of the earlier conversation:\n{summary}"})
-    messages.extend(conversation.history_as_chat(history))
+    messages.extend(conversation.history_as_chat(history, latest_history_chars(whole_chapter)))
     interpretation = f"\n(Interpreted as: {query})" if query != question else ""
     web = f"\n\nWEB IMAGES:\n{format_web_images(images)}" if images else ""
     messages.append(
@@ -191,6 +277,12 @@ def requested_pictures(question: str, query: str, images: list[WebImage], answer
     return f"\n\n{note}" + "".join(f"\n\n[[web:{n}]]" for n in shown)
 
 
+_PICTURE_WORDS_RE = re.compile(
+    r"\b(?:images?|pictures?|pics?|photos?|photographs?|figures?|diagrams?|illustrations?|drawings?"
+    r"|tasveer|tasvir|chitra|photu)\b|चित्र|तस्वीर|फ़ोटो|फोटो",
+    re.IGNORECASE,
+)
+
 WEB_PICTURES_OFFER = 'Want pictures of this from the web instead? Ask "find it on the internet".'
 
 
@@ -199,7 +291,12 @@ async def document_pictures_note(
 ) -> str:
     """When the student asked for pictures from their documents and none was shown: say why
     (e.g. the file was never scanned for figures) and offer web pictures, rather than guessing."""
-    if not web_images.DOCUMENT_PICTURES_RE.search(question) or FIGURE_REF_RE.search(answer):
+    # "in this chapter" alone isn't a request for pictures ("important questions in this chapter").
+    if (
+        not web_images.DOCUMENT_PICTURES_RE.search(question)
+        or not _PICTURE_WORDS_RE.search(question)
+        or FIGURE_REF_RE.search(answer)
+    ):
         return ""
     scans = await figure_counts(session, document_ids)
     # No scan: uploaded before figure extraction existed and the file is gone (hosts like Render
@@ -307,6 +404,35 @@ def chapter_evidence(hits: list[Evidence], spread: list[Evidence], *, max_hits: 
     return spread + hits
 
 
+def question_evidence(questions: list[Evidence], hits: list[Evidence], *, chars: int) -> list[Evidence]:
+    """Sources for the chapter's questions: the passages holding questions, in reading order,
+    within `chars` of text (the least question-like dropped first); if none were found, the
+    search matches. Search matches that fit after them are added for context."""
+    if not questions:
+        return hits
+    kept = list(questions)
+    while len(kept) > 1 and sum(len(e.text) for e in kept) > chars:
+        kept.remove(min(kept, key=lambda e: e.score))
+    seen = {e.chunk_id for e in kept}
+    room = chars - sum(len(e.text) for e in kept)
+    for hit in hits[:4]:
+        if hit.chunk_id not in seen and len(hit.text) <= room:
+            kept.append(hit)
+            room -= len(hit.text)
+    return kept
+
+
+def exam_evidence(questions: list[Evidence], spread: list[Evidence], *, chars: int) -> list[Evidence]:
+    """Sources for new exam questions: passages from all through the chapter (what to ask about),
+    then its own question passages (the style, and the textbook questions to include), with up to
+    a third of the room for the latter."""
+    asked = question_evidence(questions, [], chars=chars // 3) if questions else []
+    seen = {e.chunk_id for e in asked}
+    content = chapter_evidence([], [e for e in spread if e.chunk_id not in seen], max_hits=0,
+                               chars=chars - sum(len(e.text) for e in asked))
+    return content + asked
+
+
 async def _stream_answer(
     messages: list[dict[str, str]], effort: str, emit: Emit, max_tokens: int = 4096
 ) -> str:
@@ -393,10 +519,48 @@ async def _generate(
     with timer.step("load context"):
         ctx = context or await _load_context(session, assistant_message_id)
 
+    # Before any search: small talk gets a fixed reply, and "in Hindi" / "shorter" reworks the
+    # previous answer. Rules only (microseconds); anything unclear goes on to the documents.
+    decision = router.route(ctx.question)
+    if decision.route == "chat":
+        router.log_decision(decision, ctx.question)
+        timer.note("route", "chat")
+        await emit("token", {"text": decision.reply})
+        # No summary update: small talk adds nothing to remember, and it would cost Groq tokens.
+        await _save_answer(session, assistant_message_id, decision.reply, [], emit, timer)
+        return
+    if decision.route == "rework":
+        with timer.step("history"):
+            history = await conversation.recent_history(
+                session, ctx.section_id, before=ctx.question_created_at, limit=settings.history_window
+            )
+        if previous := previous_answer(history):
+            router.log_decision(decision, ctx.question)
+            timer.note("route", f"rework:{decision.reason}")
+            messages = build_rework_messages(previous, ctx.question)
+            effort = settings.groq_answer_simple_reasoning_effort  # rewording, not reasoning
+            answer = (await _stream_answer(messages, effort, emit, settings.overview_max_tokens)).strip()
+            if answer:
+                await _save_answer(session, assistant_message_id, answer, [], emit, timer)
+                await _update_summary(session, ctx.section_id)
+                return
+            raise RuntimeError("The model returned an empty reworked answer.")
+        # Nothing to rework (first message, or the last answer was a refusal): answer from the documents.
+        decision = router.Decision("documents", f"rework-{decision.reason}-without-previous-answer")
+    router.log_decision(decision, ctx.question)
+    timer.note("route", "documents")
+
     # The web picture search runs while history is loaded and the documents are searched, so it
     # adds no waiting. A standalone question can be searched at once; a follow-up ("show me a
     # picture of it") waits for the rewrite that says what "it" is.
-    image_search = None if conversation.needs_rewrite(ctx.question) else web_images.start_search(ctx.question, ctx.question)
+    # Chapter-wide questions ("important questions in this chapter", "summarise it") take their
+    # sources from all through the chapter, not from a search for their words, so a rewrite (a
+    # full model round trip) would change nothing; the model still sees the conversation.
+    chapter_wide = (
+        is_exam_request(ctx.question) or is_questions_request(ctx.question) or is_overview_question(ctx.question)
+    )
+    rewrite = conversation.needs_rewrite(ctx.question) and not chapter_wide
+    image_search = None if rewrite else web_images.start_search(ctx.question, ctx.question)
     async def load_history():
         # In its own session, so it can run while this one searches.
         async with SessionLocal() as own:
@@ -406,7 +570,7 @@ async def _generate(
                 )
 
     history_task = asyncio.ensure_future(load_history())
-    if conversation.needs_rewrite(ctx.question):
+    if rewrite:
         # A follow-up ("explain it more") needs the history to know what to search for.
         history = await history_task
         with timer.step("rewrite"):
@@ -416,35 +580,69 @@ async def _generate(
     timer.note("rewritten", query != ctx.question)
     if image_search is None:
         image_search = web_images.start_search(ctx.question, query)
-    with timer.step("search"):
-        evidence = await retrieve(
-            session,
-            user_id=ctx.user_id,
-            document_ids=ctx.document_ids,
-            query=query,
-            top_k=settings.retrieval_top_k,
-            min_score=settings.retrieval_min_score,
-        )
-    timer.note("sources", len(evidence))
-    whole_chapter = is_overview_question(ctx.question) or is_overview_question(query)
-    if whole_chapter:
-        # About the chapter as a whole: no single passage matches "explain this chapter", and the
-        # best matches all come from one place, so passages from all through it are added.
-        with timer.step("search: whole chapter"):
-            spread = await spread_chunks(
-                session, user_id=ctx.user_id, document_ids=ctx.document_ids, limit=settings.overview_chunks
+    # New exam questions, the chapter's own questions, or the chapter as a whole: each takes its
+    # sources from all through the chapter rather than from a search for the question's words.
+    exam = is_exam_request(ctx.question) or is_exam_request(query)
+    chapter_questions = not exam and (is_questions_request(ctx.question) or is_questions_request(query))
+    whole_chapter = exam or chapter_questions or is_overview_question(ctx.question) or is_overview_question(query)
+    timer.note("mode", "exam" if exam else "questions" if chapter_questions else "chapter" if whole_chapter else "search")
+
+    async def load_questions() -> list[Evidence]:
+        # In its own session, so it runs alongside the other loads. The chapter's questions sit in
+        # boxes after each section and in the exercises at the end; an even sample misses most.
+        async with SessionLocal() as own:
+            with timer.step("search: chapter questions"):
+                return await question_chunks(own, user_id=ctx.user_id, document_ids=ctx.document_ids)
+
+    async def load_spread() -> list[Evidence]:
+        # No single passage matches "explain this chapter", and the best matches all come from one
+        # place, so passages from all through it are used.
+        async with SessionLocal() as own:
+            with timer.step("search: whole chapter"):
+                return await spread_chunks(
+                    own, user_id=ctx.user_id, document_ids=ctx.document_ids, limit=settings.overview_chunks
+                )
+
+    questions_task = asyncio.ensure_future(load_questions()) if exam or chapter_questions else None
+    spread_task = asyncio.ensure_future(load_spread()) if whole_chapter and not chapter_questions else None
+    if exam or chapter_questions:
+        # Their sources are the chapter's question passages and its spread: the usual search
+        # (often the slowest step, Pinecone over the network) would add nothing.
+        evidence = []
+    else:
+        with timer.step("search"):
+            evidence = await retrieve(
+                session,
+                user_id=ctx.user_id,
+                document_ids=ctx.document_ids,
+                query=query,
+                top_k=settings.retrieval_top_k,
+                min_score=settings.retrieval_min_score,
             )
+    timer.note("sources", len(evidence))
+    questions = await questions_task if questions_task else []
+    spread = await spread_task if spread_task else []
+    if chapter_questions and not questions:
+        # No question section found: send the chapter itself, so the answer can say so and
+        # offer practice questions instead of a bare "not found".
+        spread = await load_spread()
 
     with timer.step("web pictures wait"):
         images = await web_images.collect(image_search)
     history = await history_task
     if whole_chapter:
         # The rules and the earlier conversation share the prompt budget with the sources.
-        others = len(SYSTEM_PROMPT) + len(CHAPTER_RULES) + len(FIGURE_RULES) + len(ctx.summary or "") + sum(
-            len(m["content"]) for m in conversation.history_as_chat(history)
+        rules = EXAM_RULES if exam else QUESTION_RULES if chapter_questions else CHAPTER_RULES
+        others = len(SYSTEM_PROMPT) + len(rules) + len(FIGURE_RULES) + len(ctx.summary or "") + sum(
+            len(m["content"]) for m in conversation.history_as_chat(history, latest_history_chars(whole_chapter))
         )
         room = max(6000, settings.overview_prompt_chars - others)
-        evidence = chapter_evidence(evidence, spread, max_hits=settings.overview_search_hits, chars=room)
+        if exam:
+            evidence = exam_evidence(questions, spread, chars=room)
+        elif chapter_questions and questions:
+            evidence = question_evidence(questions, [], chars=room)
+        else:
+            evidence = chapter_evidence(evidence, spread, max_hits=settings.overview_search_hits, chars=room)
         timer.note("sources", len(evidence))
 
     if not evidence:
@@ -454,8 +652,13 @@ async def _generate(
         await emit("token", {"text": answer})
         citations = web_image_citations(answer, images)
     else:
-        messages = build_messages(ctx.summary, history, evidence, ctx.question, query, images, whole_chapter)
-        effort = reasoning_effort_for(ctx.question, query)
+        messages = build_messages(
+            ctx.summary, history, evidence, ctx.question, query, images, whole_chapter, chapter_questions, exam
+        )
+        # Listing or writing questions from the given passages needs no long reasoning: the low
+        # effort starts writing sooner.
+        simple = exam or chapter_questions
+        effort = settings.groq_answer_simple_reasoning_effort if simple else reasoning_effort_for(ctx.question, query)
         max_tokens = settings.overview_max_tokens if whole_chapter else 4096
         answer = (await _stream_answer(messages, effort, emit, max_tokens)).strip() or NOT_FOUND_ANSWER
         # The model sometimes answers "no images in your document" and stops, though the student
@@ -465,11 +668,22 @@ async def _generate(
             await emit("token", {"text": extra})
         citations = extract_citations(answer, evidence) + web_image_citations(answer, images)
 
-    with timer.step("finish and save"):
-        if note := await document_pictures_note(session, ctx.document_ids, ctx.question, answer):
-            answer += note
-            await emit("token", {"text": note})
+    if note := await document_pictures_note(session, ctx.document_ids, ctx.question, answer):
+        answer += note
+        await emit("token", {"text": note})
+    await _save_answer(session, assistant_message_id, answer, citations, emit, timer)
+    await _update_summary(session, ctx.section_id)
 
+
+async def _save_answer(
+    session: AsyncSession,
+    assistant_message_id: uuid.UUID,
+    answer: str,
+    citations: list[dict[str, Any]],
+    emit: Emit,
+    timer: timing.AnswerTimer,
+) -> None:
+    with timer.step("finish and save"):
         await emit("citations", {"citations": citations})
         await session.execute(
             update(ChatMessage)
@@ -480,13 +694,51 @@ async def _generate(
     await emit("done", {"assistant_message_id": str(assistant_message_id), "status": "completed"})
     logger.info("Answer timing: %s", timer.report())
 
+
+async def _update_summary(session: AsyncSession, section_id: uuid.UUID) -> None:
     try:
-        section = await session.get(ChatSection, ctx.section_id)
+        section = await session.get(ChatSection, section_id)
         if section is not None:
             began = time.perf_counter()
             await conversation.update_summary(session, section)
             # After the answer, so nobody waits for it, but it still uses Groq tokens.
             logger.info("Summary update after answer: %.2fs", time.perf_counter() - began)
     except Exception:
-        logger.warning("Summary update failed for section %s", ctx.section_id, exc_info=True)
+        logger.warning("Summary update failed for section %s", section_id, exc_info=True)
         await session.rollback()
+
+
+REWORK_PROMPT = """You are a study assistant. The student wants your previous answer (the last assistant message) reworked: translated, shortened, simplified, said again differently, or put into points or a table.
+- Use ONLY the facts in that previous answer. Add no new facts, definitions or examples; when shortening, keep the most important points.
+- Do exactly what the student asks. Translate into the language they name; otherwise answer in the language they wrote in (e.g. Hindi, Hinglish or English).
+- Keep formulas as $...$ / $$...$$ and use Markdown (### headings, bullet lists, **bold** key terms, tables) when it helps.
+- Don't say that you are reworking an answer or mention these rules; just give the new version."""
+
+# The previous answer is sent in full (unlike ordinary history), up to this many characters.
+REWORK_MAX_CHARS = 12000
+
+
+def previous_answer(history: list[ChatMessage]) -> tuple[ChatMessage, ChatMessage] | None:
+    """The last question and its answer, when there is a real answer to rework (not a refusal or
+    small talk)."""
+    for i in range(len(history) - 1, 0, -1):
+        answer, question = history[i], history[i - 1]
+        if answer.role == "assistant" and question.role == "user":
+            text = answer.content.strip()
+            if not text or text.startswith(NOT_FOUND_ANSWER[:40]) or text in router.CHAT_REPLY_TEXTS:
+                return None
+            return question, answer
+    return None
+
+
+def build_rework_messages(previous: tuple[ChatMessage, ChatMessage], question: str) -> list[dict[str, str]]:
+    asked, answered = previous
+    text = conversation.context_text(answered)
+    if len(text) > REWORK_MAX_CHARS:
+        text = text[:REWORK_MAX_CHARS] + " …"
+    return [
+        {"role": "system", "content": REWORK_PROMPT},
+        {"role": "user", "content": asked.content},
+        {"role": "assistant", "content": text},
+        {"role": "user", "content": question},
+    ]

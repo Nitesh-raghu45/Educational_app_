@@ -100,6 +100,10 @@ ChatView.tsx ─POST /sections/{id}/messages (SSE stream)─▶ api/sections.pos
    ├ sections.submit_question         check 30-question quota + daily limit,
    │                                  save question + empty "pending" answer
    └ streaming.start_generation ─▶ rag.generate_answer (background task)
+        ├ router.route                    rules only, before any search:
+        │    chat   ("hi", "thanks", "ok")      → fixed reply, no search, no model
+        │    rework ("in Hindi", "shorter")     → model + previous answer only, no search
+        │    documents (everything else)        → the steps below
         ├ conversation.recent_history     (in parallel with the search)
         ├ conversation.rewrite_query      only for follow-ups like "explain it more"
         ├ web_images.start_search         pictures, in parallel
@@ -450,6 +454,16 @@ client must provide.
 | `web_image_citations`, `requested_pictures` | Web pictures the answer shows, and adding them when the student asked but the model left them out. |
 | `document_pictures_note` | Explains when the student asked for document pictures that don't exist yet. |
 | `AnswerContext`, `_load_context` | The data an answer needs, preloaded by the request (or loaded for retries). |
+| `is_questions_request`, `question_evidence` | "Important / exercise questions": lists the chapter's own questions from every passage that holds them (`retrieval.question_chunks`), no search. |
+| `is_exam_request`, `exam_evidence` | "Questions that can come in the exam", "make a test": writes a new practice set (MCQ, 1/3/5-mark, diagram/numerical) from passages across the chapter plus its own exercises (marked NCERT), no search. |
+| `previous_answer`, `build_rework_messages` | For the "rework" route: the last real answer (not a refusal or small talk) and the prompt that rewords it using only its facts. |
+| `_save_answer`, `_update_summary` | Save the finished answer and tell the browser; update the chat's rolling summary afterwards. |
+
+#### `router.py`: does a message need a search?
+| Function | What it does |
+|---|---|
+| `route` | Rules only (no model call, microseconds). `chat`: the whole message is small talk (greeting, thanks, "ok", "bye", "what can you do?", in English, Hinglish or Hindi) → a fixed reply. `rework`: only asks to redo the previous answer (translate, shorter, simpler, points/table, again) with no topic word → reworded from that answer. Anything else, or anything unclear → `documents`. |
+| `log_decision` | Logs one `Route: route=… reason=… question=…` line per message, to tune the rules from real messages. |
 
 #### `figures.py`: diagrams from documents
 | Function | What it does |
